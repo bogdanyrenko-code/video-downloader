@@ -634,7 +634,29 @@ def api_stats():
         'total_downloads': total_downloads,
         'active_sessions': len(USER_SESSIONS)
     })
+@app.route('/requisites')
+def requisites():
+    return '''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Реквизиты</title>
+    <style>
+        body { font-family: Arial; padding: 40px; background: #0f0c29; color: white; }
+        .card { background: rgba(255,255,255,0.1); padding: 30px; border-radius: 20px; max-width: 600px; margin: auto; }
+        h1 { color: #a855f7; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Реквизиты самозанятого</h1>
+        <p><strong>ИНН:</strong> 231408820790</p>
+        <p><strong>ФИО:</strong> Богдан</p>
+        <p><strong>Статус:</strong> Самозанятый</p>
+        <p><strong>Налог:</strong> 4% от доходов</p>
+    </div>
+</body>
+</html>'''
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-
