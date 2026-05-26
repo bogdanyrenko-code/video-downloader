@@ -1,3 +1,5 @@
+
+
 import os
 import uuid
 import time
@@ -24,6 +26,9 @@ app.secret_key = os.environ.get('SECRET_KEY', 'super-secret-key-2024-change-me')
 DOWNLOAD_FOLDER = "downloads"
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
+# Файл для хранения премиум-пользователей
+PREMIUM_FILE = "premium_users.json"
+
 # База данных пользователей (в продакшене использовать реальную БД)
 PREMIUM_USERS = {}
 DOWNLOAD_STATS = {}
@@ -36,7 +41,39 @@ MAX_VIDEO_SIZE_PREMIUM_MB = 500
 CLEANUP_INTERVAL = 3600  # Очистка файлов каждый час
 FILE_RETENTION_TIME = 1800  # Хранить файлы 30 минут
 
-# ---------- Утилиты ----------
+# ========== ФУНКЦИИ ДЛЯ СОХРАНЕНИЯ ПРЕМИУМ-СТАТУСА ==========
+def load_premium_users():
+    """Загружает премиум-пользователей из файла"""
+    global PREMIUM_USERS
+    if os.path.exists(PREMIUM_FILE):
+        try:
+            with open(PREMIUM_FILE, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+                # Проверяем, не истекла ли подписка у кого-то
+                now = datetime.now()
+                for user_id, data in loaded.items():
+                    expire_date = datetime.strptime(data['expire'], '%Y-%m-%d')
+                    if expire_date >= now:
+                        PREMIUM_USERS[user_id] = data
+                logger.info(f"Загружено {len(PREMIUM_USERS)} премиум-пользователей")
+        except Exception as e:
+            logger.error(f"Ошибка загрузки: {e}")
+    else:
+        PREMIUM_USERS = {}
+
+def save_premium_users():
+    """Сохраняет премиум-пользователей в файл"""
+    try:
+        with open(PREMIUM_FILE, 'w', encoding='utf-8') as f:
+            json.dump(PREMIUM_USERS, f, ensure_ascii=False, indent=2)
+        logger.info(f"Сохранено {len(PREMIUM_USERS)} премиум-пользователей")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения: {e}")
+
+# Загружаем премиум-пользователей при старте сервера
+load_premium_users()
+
+# ========== УТИЛИТЫ ==========
 def cleanup_old_files():
     """Удаляет старые файлы из папки загрузок"""
     while True:
@@ -70,12 +107,13 @@ def is_premium(user_id):
     return datetime.now() < expire_date
 
 def add_premium(user_id, days=30):
-    """Добавляет премиум подписку"""
+    """Добавляет премиум подписку (с сохранением в файл)"""
     expire_date = datetime.now() + timedelta(days=days)
     PREMIUM_USERS[user_id] = {
         'expire': expire_date.strftime('%Y-%m-%d'),
         'activated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }
+    save_premium_users()
     logger.info(f"Премиум активирован для {user_id} до {expire_date}")
 
 def check_download_limit(user_id):
@@ -659,37 +697,64 @@ def requisites():
 # ---------- СТРАНИЦА ОПЛАТЫ (IntellectMoney) ----------
 @app.route('/create_payment')
 def create_payment():
-    return '''
+    user_id = get_user_id()
+    return f'''
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <title>Оплата подписки</title>
     <style>
-        body { font-family: Arial; padding: 40px; background: #0f0c29; color: white; text-align: center; }
-        .container { max-width: 600px; margin: auto; background: rgba(255,255,255,0.1); padding: 30px; border-radius: 20px; }
-        iframe { width: 100%; min-height: 550px; border: none; border-radius: 12px; }
-        .info { margin-top: 20px; font-size: 14px; opacity: 0.7; }
+        body {{ font-family: Arial; padding: 40px; background: #0f0c29; color: white; text-align: center; }}
+        .container {{ max-width: 500px; margin: auto; background: rgba(255,255,255,0.1); padding: 30px; border-radius: 20px; }}
+        form {{ display: flex; flex-direction: column; gap: 15px; }}
+        input, button {{ padding: 12px; border-radius: 8px; border: none; font-size: 16px; }}
+        button {{ background: #f59e0b; color: #333; font-weight: bold; cursor: pointer; }}
     </style>
 </head>
 <body>
     <div class="container">
         <h1>💎 Оформление Premium</h1>
-        <p>Стоимость подписки: <strong>10 ₽ / месяц</strong> (тестовый период)</p>
-        <p>После оплаты премиум активируется автоматически</p>
-        <iframe src="https://merchant.intellectmoney.ru/v2/ru/prepare/?EshopId=472541&ServiceName=Premium%20%D0%BF%D0%BE%D0%B4%D0%BF%D0%B8%D1%81%D0%BA%D0%B0%20%D0%BD%D0%B0%2030%20%D0%B4%D0%BD%D0%B5%D0%B9&ServiceNameAuthor=0&PaymentAmount=10&PaymentCurrency=RUB&PaymentAmountIsReadonly=false&ButtonName=0&OpenNewWindow=true&UserFullName=&UserEmail=true&PhoneNumber=&SuccessUrl=https%3A%2F%2Fvideo-downloader.onrender.com%2Fpayment_success&MerchantReceipt=&Comment=&CommentTip=&Hash=74eb5fb668fdd21f765c7bbc2847e020&PayerData=&Email=" width="100%" height="550" frameborder="0"></iframe>
-        <p class="info">Оплата защищена. Никакие данные карты не хранятся на сайте.</p>
+        <p>Стоимость подписки: <strong>50 ₽ / месяц</strong></p>
+        <form action="https://merchant.intellectmoney.ru/ru/payment/" method="POST">
+            <input type="hidden" name="eshopId" value="472541">
+            <input type="hidden" name="paymentAmount" value="50">
+            <input type="hidden" name="paymentCurrency" value="RUB">
+            <input type="hidden" name="paymentDesc" value="Premium подписка на 30 дней">
+            <input type="hidden" name="successUrl" value="https://video-downloader.onrender.com/payment_success">
+            <input type="hidden" name="failUrl" value="https://video-downloader.onrender.com/create_payment">
+            <input type="hidden" name="user_id" value="{user_id}">
+            <button type="submit">Перейти к оплате 50 ₽</button>
+        </form>
+        <p class="info" style="margin-top: 20px; font-size: 14px;">Оплата защищена. Данные карты не хранятся на сайте.</p>
     </div>
 </body>
 </html>
     '''
 
-@app.route('/payment_success')
+@app.route('/payment_success', methods=['GET', 'POST'])
 def payment_success():
-    """Страница успешной оплаты — автоматически активирует премиум"""
+    """Обрабатывает и возврат пользователя, и уведомление от IntellectMoney"""
+    
+    # Если это POST-запрос от IntellectMoney (уведомление)
+    if request.method == 'POST':
+        data = request.form
+        logger.info(f"Получено уведомление: {data}")
+        
+        # Проверяем статус платежа
+        if data.get('paymentStatus') == '5':  # 5 = успешно оплачен
+            user_id = data.get('user_id')
+            if user_id:
+                add_premium(user_id, 30)
+                logger.info(f"✅ Премиум активирован для {user_id} через уведомление")
+            else:
+                logger.warning("Не передан user_id в уведомлении")
+        return 'OK', 200
+    
+    # Если это GET-запрос (пользователь вернулся с оплаты)
     user_id = get_user_id()
     add_premium(user_id, 30)
-    logger.info(f"Премиум автоматически активирован для {user_id} после оплаты")
+    logger.info(f"Премиум активирован для {user_id} после возврата с оплаты")
     
     return '''
 <!DOCTYPE html>
