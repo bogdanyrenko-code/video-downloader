@@ -36,6 +36,7 @@ FILE_RETENTION_TIME = 1800
 
 SECRET_REQUISITES_KEY = "Bogdan2025Secure"
 
+# ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------
 def load_premium_users():
     global PREMIUM_USERS
     if os.path.exists(PREMIUM_FILE):
@@ -203,290 +204,888 @@ def download_video(url, format_id='best'):
     except Exception as e:
         return None, str(e)
 
-# ---------- HTML ШАБЛОН (оригинальный красивый) ----------
+# ---------- ДИЗАЙН С МИНИ-ИГРОЙ (СФЕРЫ ТОЛЬКО НА ФОНЕ) ----------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VideoSave — Скачивай видео легко</title>
+    <title>VideoSave — Галактический загрузчик</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-gradient: radial-gradient(ellipse at 20% 30%, #1a1a2e, #0f0f1a);
+            --text-primary: #e0e0e0;
+            --text-secondary: #a0a0c0;
+            --card-bg: rgba(20, 20, 40, 0.55);
+            --card-border: rgba(168, 85, 247, 0.25);
+            --card-border-hover: rgba(168, 85, 247, 0.5);
+            --input-bg: rgba(0, 0, 0, 0.4);
+            --status-bg: rgba(0, 0, 0, 0.3);
+            --premium-card-bg: rgba(30, 30, 50, 0.5);
+            --premium-card-border: rgba(245, 158, 11, 0.3);
+            --footer-border: rgba(255, 255, 255, 0.1);
+            --alert-error-bg: rgba(239, 68, 68, 0.15);
+            --alert-error-border: rgba(239, 68, 68, 0.4);
+            --alert-success-bg: rgba(34, 197, 94, 0.15);
+            --alert-success-border: rgba(34, 197, 94, 0.4);
+            --format-card-bg: rgba(30, 30, 50, 0.6);
+        }
+
+        body.light {
+            --bg-gradient: radial-gradient(ellipse at 20% 30%, #e0e0e0, #c0c0d0);
+            --text-primary: #1e293b;
+            --text-secondary: #475569;
+            --card-bg: rgba(255, 255, 255, 0.7);
+            --card-border: rgba(168, 85, 247, 0.3);
+            --card-border-hover: rgba(168, 85, 247, 0.6);
+            --input-bg: rgba(255, 255, 255, 0.8);
+            --status-bg: rgba(255, 255, 255, 0.4);
+            --premium-card-bg: rgba(255, 255, 255, 0.5);
+            --premium-card-border: rgba(245, 158, 11, 0.4);
+            --footer-border: rgba(0, 0, 0, 0.1);
+            --alert-error-bg: rgba(239, 68, 68, 0.1);
+            --alert-error-border: rgba(239, 68, 68, 0.3);
+            --alert-success-bg: rgba(34, 197, 94, 0.1);
+            --alert-success-border: rgba(34, 197, 94, 0.3);
+            --format-card-bg: rgba(255, 255, 255, 0.7);
+        }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-gradient);
             min-height: 100vh;
-            padding: 20px;
+            color: var(--text-primary);
+            overflow-x: hidden;
+            transition: background 0.4s ease, color 0.3s ease;
+            cursor: default;
         }
-        .container { max-width: 800px; margin: 0 auto; }
-        .header { text-align: center; color: white; margin-bottom: 40px; }
-        .header h1 { font-size: 3em; margin-bottom: 10px; text-shadow: 2px 2px 4px rgba(0,0,0,0.2); }
-        .header p { font-size: 1.2em; opacity: 0.9; }
-        .card {
-            background: white;
-            border-radius: 20px;
-            padding: 30px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            margin-bottom: 20px;
-        }
-        .premium-badge {
-            display: inline-block;
-            background: linear-gradient(135deg, #ffd700, #ffed4e);
-            color: #333;
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-weight: bold;
-            font-size: 0.9em;
-            margin-left: 10px;
-        }
-        .user-info {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-        }
-        .input-group { margin-bottom: 20px; }
-        .input-group label { display: block; margin-bottom: 8px; font-weight: 600; color: #333; }
-        .input-group input {
+
+        /* Контейнер для сфер (низкий z-index, чтобы быть на фоне) */
+        #spheresContainer {
+            position: fixed;
+            top: 0;
+            left: 0;
             width: 100%;
-            padding: 15px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 16px;
+            height: 100%;
+            pointer-events: auto;
+            z-index: 5;
+            overflow: hidden;
+        }
+
+        /* Летающие сферы для лопания */
+        .pop-sphere {
+            position: absolute;
+            border-radius: 50%;
+            cursor: pointer;
+            transition: transform 0.05s linear;
+            animation: floatSphere 8s ease-in-out infinite;
+            box-shadow: 0 0 15px rgba(168, 85, 247, 0.5);
+            z-index: 5;
+            pointer-events: auto;
+        }
+
+        @keyframes floatSphere {
+            0%, 100% { transform: translateY(0) translateX(0); }
+            25% { transform: translateY(-20px) translateX(15px); }
+            50% { transform: translateY(10px) translateX(-10px); }
+            75% { transform: translateY(-10px) translateX(20px); }
+        }
+
+        /* Анимация взрыва */
+        @keyframes popExplosion {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.8); opacity: 0.8; background: radial-gradient(circle, #ffaa00, #ff6600); }
+            100% { transform: scale(0); opacity: 0; }
+        }
+
+        .pop-animation {
+            animation: popExplosion 0.3s ease-out forwards;
+        }
+
+        /* Счётчик очков */
+        .score-board {
+            position: fixed;
+            top: 20px;
+            right: 80px;
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--card-border);
+            border-radius: 50px;
+            padding: 8px 18px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            gap: 8px;
             transition: all 0.3s;
         }
-        .input-group input:focus {
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+
+        .score-board span:first-child {
+            font-size: 1.3rem;
         }
+
+        /* Анимация "ТЫКУН!" */
+        .achievement {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) scale(0);
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            color: white;
+            font-size: 4rem;
+            font-weight: bold;
+            padding: 20px 40px;
+            border-radius: 80px;
+            z-index: 200;
+            white-space: nowrap;
+            box-shadow: 0 0 50px rgba(245, 158, 11, 0.8);
+            text-shadow: 0 0 10px rgba(0,0,0,0.3);
+            animation: achievementPop 0.5s ease-out forwards;
+            pointer-events: none;
+        }
+
+        @keyframes achievementPop {
+            0% { transform: translate(-50%, -50%) scale(0); opacity: 0; }
+            50% { transform: translate(-50%, -50%) scale(1.2); opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+        }
+
+        .achievement-fade {
+            animation: achievementFade 2s ease-in forwards;
+        }
+
+        @keyframes achievementFade {
+            0% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+            80% { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+            100% { opacity: 0; transform: translate(-50%, -50%) scale(1.3); display: none; }
+        }
+
+        /* Конфетти */
+        .confetti {
+            position: fixed;
+            width: 10px;
+            height: 10px;
+            background: #f59e0b;
+            position: absolute;
+            z-index: 150;
+            animation: confettiFall 3s ease-out forwards;
+        }
+
+        @keyframes confettiFall {
+            0% { transform: translateY(-100vh) rotate(0deg); opacity: 1; }
+            100% { transform: translateY(100vh) rotate(360deg); opacity: 0; }
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            position: relative;
+            z-index: 20;
+        }
+
+        /* Кнопка переключения темы */
+        .theme-toggle {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--card-border);
+            border-radius: 50px;
+            width: 50px;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 1.6rem;
+            z-index: 100;
+            transition: all 0.3s ease;
+        }
+
+        .theme-toggle:hover {
+            transform: scale(1.1) rotate(15deg);
+            border-color: var(--card-border-hover);
+        }
+
+        /* Стеклянная карточка */
+        .glass-card {
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            border-radius: 48px;
+            padding: 40px;
+            border: 1px solid var(--card-border);
+            box-shadow: 0 25px 45px -12px rgba(0, 0, 0, 0.4), 0 0 20px rgba(168, 85, 247, 0.05);
+            transition: all 0.4s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+            z-index: 20;
+            position: relative;
+        }
+
+        .glass-card:hover {
+            border-color: var(--card-border-hover);
+            transform: translateY(-4px);
+        }
+
+        .logo {
+            text-align: center;
+            font-size: 4.5rem;
+            margin-bottom: 10px;
+            animation: floatLogo 3s ease-in-out infinite;
+        }
+
+        @keyframes floatLogo {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-12px); }
+        }
+
+        h1 {
+            font-size: 3rem;
+            text-align: center;
+            background: linear-gradient(135deg, var(--text-primary), #a855f7, #7c3aed);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: var(--text-secondary);
+            margin-bottom: 30px;
+        }
+
+        .platforms {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 12px;
+            margin-bottom: 30px;
+        }
+
+        .platform-badge {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(4px);
+            padding: 6px 18px;
+            border-radius: 40px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            border: 1px solid var(--card-border);
+            transition: all 0.3s;
+            cursor: default;
+        }
+
+        .platform-badge:hover {
+            border-color: #a855f7;
+            color: var(--text-primary);
+            transform: translateY(-2px);
+        }
+
+        .status-card {
+            background: var(--status-bg);
+            border-radius: 24px;
+            padding: 16px 24px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+            border: 1px solid var(--card-border);
+        }
+
+        .premium-badge {
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            padding: 8px 22px;
+            border-radius: 40px;
+            font-weight: bold;
+            color: white;
+            animation: glow 2s infinite;
+        }
+
+        @keyframes glow {
+            0%, 100% { box-shadow: 0 0 0px #f59e0b; }
+            50% { box-shadow: 0 0 15px rgba(245, 158, 11, 0.5); }
+        }
+
+        .free-badge {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 8px 22px;
+            border-radius: 40px;
+            color: var(--text-secondary);
+        }
+
+        .url-input {
+            width: 100%;
+            padding: 16px 24px;
+            background: var(--input-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 60px;
+            font-size: 1rem;
+            color: var(--text-primary);
+            transition: all 0.3s;
+            margin-bottom: 20px;
+        }
+
+        .url-input:focus {
+            outline: none;
+            border-color: #a855f7;
+            box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15);
+        }
+
         .btn {
             width: 100%;
-            padding: 15px;
+            padding: 16px;
             border: none;
-            border-radius: 10px;
-            font-size: 18px;
+            border-radius: 60px;
+            font-size: 1rem;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.3s;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #a855f7, #7c3aed);
             color: white;
+            position: relative;
+            overflow: hidden;
         }
-        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3); }
-        .btn-success {
-            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
-            color: white;
-            margin-top: 10px;
+
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+            transition: left 0.5s;
         }
-        .btn-success:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(56, 239, 125, 0.3); }
+
+        .btn:hover::before {
+            left: 100%;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px -5px rgba(168, 85, 247, 0.4);
+        }
+
+        .loader {
+            display: none;
+            text-align: center;
+            padding: 40px;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 3px solid rgba(168, 85, 247, 0.2);
+            border-top: 3px solid #a855f7;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+
         .video-info {
             display: none;
-            margin-top: 20px;
-            padding: 20px;
-            background: #f8f9fa;
-            border-radius: 10px;
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 1px solid var(--footer-border);
         }
-        .video-info img { width: 100%; border-radius: 10px; margin-bottom: 15px; }
-        .formats { display: grid; gap: 10px; margin-top: 15px; }
-        .format-option {
-            padding: 12px;
-            background: white;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
+
+        .video-info img {
+            width: 100%;
+            border-radius: 24px;
+            margin-bottom: 15px;
+        }
+
+        .formats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 12px;
+            margin: 20px 0;
+        }
+
+        .format-card {
+            background: var(--format-card-bg);
+            backdrop-filter: blur(4px);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            padding: 14px;
+            text-align: center;
             cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+        }
+
+        .format-card:hover {
+            transform: translateY(-3px);
+            border-color: #a855f7;
+            background: rgba(168, 85, 247, 0.1);
+        }
+
+        .format-card.selected {
+            background: rgba(168, 85, 247, 0.2);
+            border-color: #a855f7;
+            box-shadow: 0 0 15px rgba(168, 85, 247, 0.2);
+        }
+
+        .format-locked {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .premium-card {
+            background: var(--premium-card-bg);
+            backdrop-filter: blur(4px);
+            border: 1px solid var(--premium-card-border);
+            border-radius: 32px;
+            padding: 28px;
+            margin-top: 30px;
+            text-align: center;
+            transition: all 0.4s;
+        }
+
+        .premium-card:hover {
+            border-color: #f59e0b;
+            transform: translateY(-4px);
+        }
+
+        .features {
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+
+        .feature-item {
+            text-align: center;
+        }
+
+        .feature-icon {
+            font-size: 2rem;
+            margin-bottom: 8px;
+        }
+
+        .btn-premium {
+            display: inline-block;
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            border-radius: 60px;
+            padding: 12px 32px;
+            color: white;
+            text-decoration: none;
+            font-weight: bold;
             transition: all 0.3s;
         }
-        .format-option:hover { border-color: #667eea; background: #f0f4ff; }
-        .format-option.selected { border-color: #667eea; background: #e8eeff; }
-        .alert { padding: 15px; border-radius: 10px; margin-bottom: 20px; }
-        .alert-error { background: #fee; color: #c33; border: 1px solid #fcc; }
-        .alert-success { background: #efe; color: #3c3; border: 1px solid #cfc; }
-        .loader { display: none; text-align: center; padding: 20px; }
-        .spinner {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #667eea;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto;
+
+        .btn-premium:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px -5px rgba(245, 158, 11, 0.4);
         }
-        @keyframes spin { 100% { transform: rotate(360deg); } }
-        .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-top: 30px; }
-        .feature { text-align: center; color: white; }
-        .feature-icon { font-size: 3em; margin-bottom: 10px; }
-        .supported-platforms { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; justify-content: center; }
-        .platform-tag { background: rgba(255, 255, 255, 0.2); color: white; padding: 8px 15px; border-radius: 20px; font-size: 0.9em; }
-        @media (max-width: 600px) { .header h1 { font-size: 2em; } .card { padding: 20px; } }
+
+        .alert {
+            padding: 14px;
+            border-radius: 20px;
+            margin-bottom: 20px;
+        }
+
+        .alert-error {
+            background: var(--alert-error-bg);
+            border: 1px solid var(--alert-error-border);
+            color: #fca5a5;
+        }
+
+        .alert-success {
+            background: var(--alert-success-bg);
+            border: 1px solid var(--alert-success-border);
+            color: #86efac;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid var(--footer-border);
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .footer a {
+            color: #a855f7;
+            text-decoration: none;
+        }
+
+        @keyframes fadeInScale {
+            from { opacity: 0; transform: scale(0.95) translateY(20px); }
+            to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+
+        .animate {
+            animation: fadeInScale 0.5s ease-out;
+        }
+
+        @media (max-width: 600px) {
+            .glass-card { padding: 24px; }
+            h1 { font-size: 2rem; }
+            .formats-grid { grid-template-columns: repeat(2, 1fr); }
+            .logo { font-size: 3rem; }
+            .theme-toggle { width: 40px; height: 40px; font-size: 1.2rem; top: 10px; right: 10px; }
+            .score-board { top: 10px; right: 60px; font-size: 1rem; padding: 6px 12px; }
+            .achievement { font-size: 2rem; padding: 15px 30px; white-space: nowrap; }
+        }
     </style>
 </head>
 <body>
-<div class="container">
-    <div class="header">
-        <h1>🎥 VideoSave</h1>
-        <p>Скачивайте видео с YouTube, RuTube и других платформ</p>
-        <div class="supported-platforms">
-            <span class="platform-tag">YouTube</span>
-            <span class="platform-tag">RuTube</span>
-            <span class="platform-tag">VK</span>
-            <span class="platform-tag">Twitch</span>
-            <span class="platform-tag">TikTok</span>
-            <span class="platform-tag">Instagram</span>
-        </div>
+    <div id="spheresContainer"></div>
+
+    <div class="score-board">
+        <span>💥</span>
+        <span id="scoreValue">0</span>
     </div>
-    <div class="card">
-        <div class="user-info">
-            <strong>Статус:</strong>
-            {% if is_premium %}
-                <span class="premium-badge">⭐ PREMIUM</span>
-                <div style="margin-top: 10px; font-size: 0.9em;">Действует до: {{ premium_expire }}</div>
-            {% else %}
-                Бесплатный аккаунт
-                <div style="margin-top: 10px; font-size: 0.9em;">Скачиваний сегодня: {{ downloads_today }}/{{ max_downloads }}</div>
-            {% endif %}
-        </div>
-        <div id="alertContainer"></div>
-        <div class="input-group">
-            <label for="videoUrl">🔗 Вставьте ссылку на видео</label>
-            <input type="text" id="videoUrl" placeholder="https://youtube.com/watch?v=..." autocomplete="off">
-        </div>
-        <button class="btn btn-primary" onclick="getVideoInfo()">Получить информацию</button>
-        <div class="loader" id="loader"><div class="spinner"></div><p style="margin-top: 10px;">Загрузка...</p></div>
-        <div class="video-info" id="videoInfo">
-            <img id="videoThumbnail" src="" alt="Превью">
-            <h3 id="videoTitle"></h3>
-            <div id="videoDuration"></div>
-            <div class="input-group">
-                <label>📊 Выберите качество</label>
-                <div class="formats" id="formatsList"></div>
+
+    <div class="theme-toggle" id="themeToggle">
+        🌙
+    </div>
+
+    <div class="container">
+        <div class="glass-card animate">
+            <div class="logo">🎬</div>
+            <h1>VideoSave</h1>
+            <p class="subtitle">Галактический загрузчик видео</p>
+
+            <div class="platforms">
+                <span class="platform-badge">YouTube</span>
+                <span class="platform-badge">RuTube</span>
+                <span class="platform-badge">VK</span>
+                <span class="platform-badge">Twitch</span>
+                <span class="platform-badge">TikTok</span>
             </div>
-            <button class="btn btn-success" onclick="downloadVideo()">⬇️ Скачать видео</button>
+
+            <div class="status-card">
+                <strong>📊 Статус:</strong>
+                {% if is_premium %}
+                    <span class="premium-badge">⭐ PREMIUM до {{ premium_expire }}</span>
+                {% else %}
+                    <span class="free-badge">🔓 Бесплатный ({{ downloads_today }}/{{ max_downloads }} сегодня)</span>
+                {% endif %}
+            </div>
+
+            <div id="alertContainer"></div>
+
+            <input type="text" id="videoUrl" class="url-input" placeholder="Вставьте ссылку на видео..." autocomplete="off">
+            <button class="btn" id="getInfoBtn" onclick="getVideoInfo()">🎯 Получить информацию</button>
+
+            <div class="loader" id="loader">
+                <div class="spinner"></div>
+                <p>Обработка видео...</p>
+            </div>
+
+            <div class="video-info" id="videoInfo">
+                <img id="videoThumbnail" src="" alt="Превью">
+                <h3 id="videoTitle"></h3>
+                <div id="videoDuration" style="color: var(--text-secondary); margin-bottom: 15px;"></div>
+                <div class="formats-grid" id="formatsList"></div>
+                <button class="btn" id="downloadBtn" onclick="downloadVideo()">⬇️ Скачать видео</button>
+            </div>
+
+            {% if not is_premium %}
+            <div class="premium-card">
+                <div class="feature-icon" style="font-size: 2.2rem;">✨</div>
+                <h3 style="margin-bottom: 10px;">Премиум возможности</h3>
+                <div class="features">
+                    <div class="feature-item">
+                        <div class="feature-icon">🚀</div>
+                        <div>Безлимит</div>
+                    </div>
+                    <div class="feature-item">
+                        <div class="feature-icon">🎯</div>
+                        <div>4K качество</div>
+                    </div>
+                    <div class="feature-item">
+                        <div class="feature-icon">⚡</div>
+                        <div>Мгновенно</div>
+                    </div>
+                </div>
+                <a href="/create_payment" class="btn-premium">🌟 Получить Premium за 50₽/месяц</a>
+            </div>
+            {% endif %}
+
+            <div class="footer">
+                <p>🎥 VideoSave — космическая скорость скачивания</p>
+                <p><a href="/return-policy">Политика возврата</a></p>
+            </div>
         </div>
     </div>
-    {% if not is_premium %}
-    <div class="card" style="background: linear-gradient(135deg, #667eea, #764ba2); color: white;">
-        <h2 style="margin-bottom: 20px; text-align: center;">✨ Премиум возможности</h2>
-        <div class="features">
-            <div class="feature"><div class="feature-icon">🚀</div><h3>Без ограничений</h3><p>Безлимитные скачивания</p></div>
-            <div class="feature"><div class="feature-icon">📁</div><h3>Большие файлы</h3><p>До 500 МБ</p></div>
-            <div class="feature"><div class="feature-icon">⚡</div><h3>Приоритет</h3><p>Быстрая скорость</p></div>
-            <div class="feature"><div class="feature-icon">🎯</div><h3>HD качество</h3><p>До 4K разрешения</p></div>
-        </div>
-        <a href="/create_payment" class="btn" style="background: #ffd700; color: #333; display: inline-block; width: auto; margin: 0 auto; text-decoration: none;">🌟 Получить Premium за 50₽/месяц</a>
-    </div>
-    {% endif %}
-    <div class="card" style="text-align: center; font-size: 0.9em; color: #666;">
-        <p>Сделано с ❤️ для удобного скачивания видео</p>
-        <p style="margin-top: 10px;">© 2026 VideoSave. Все права защищены.</p>
-    </div>
-</div>
-<script>
-    let selectedFormat = null;
-    let currentVideoUrl = null;
 
-    function showAlert(message, type) {
-        const alertContainer = document.getElementById('alertContainer');
-        alertContainer.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
-        setTimeout(() => { alertContainer.innerHTML = ''; }, 5000);
-    }
-
-    function showLoader(show) {
-        document.getElementById('loader').style.display = show ? 'block' : 'none';
-    }
-
-    async function getVideoInfo() {
-        const url = document.getElementById('videoUrl').value.trim();
-        if (!url) { showAlert('Введите ссылку на видео', 'error'); return; }
-        currentVideoUrl = url;
-        showLoader(true);
-        document.getElementById('videoInfo').style.display = 'none';
-        try {
-            const response = await fetch('/api/video-info', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: url })
+    <script>
+        // ---------- МИНИ-ИГРА: ЛОПАНИЕ СФЕР ----------
+        let score = 0;
+        const spheres = [];
+        const spheresContainer = document.getElementById('spheresContainer');
+        const scoreElement = document.getElementById('scoreValue');
+        let achievementShown = false;
+        
+        function createSphere() {
+            const sphere = document.createElement('div');
+            sphere.classList.add('pop-sphere');
+            const size = Math.random() * 40 + 30;
+            sphere.style.width = size + 'px';
+            sphere.style.height = size + 'px';
+            // Позиционирование с учётом отступов от краёв, чтобы не перекрывать контент
+            sphere.style.left = Math.random() * (window.innerWidth - 100) + 'px';
+            sphere.style.top = Math.random() * (window.innerHeight - 100) + 'px';
+            sphere.style.background = `radial-gradient(circle at 30% 30%, rgba(168,85,247,0.85), rgba(124,58,237,0.65))`;
+            sphere.style.boxShadow = `0 0 20px rgba(168,85,247,0.5)`;
+            sphere.style.animationDuration = (Math.random() * 5 + 5) + 's';
+            
+            sphere.addEventListener('mouseenter', () => {
+                document.body.style.cursor = 'crosshair';
             });
-            const data = await response.json();
-            if (data.error) { showAlert(data.error, 'error'); return; }
-            document.getElementById('videoThumbnail').src = data.thumbnail || '';
-            document.getElementById('videoTitle').textContent = data.title;
-            if (data.duration) {
-                const minutes = Math.floor(data.duration / 60);
-                const seconds = data.duration % 60;
-                document.getElementById('videoDuration').textContent = `⏱️ Длительность: ${minutes}:${seconds.toString().padStart(2, '0')}`;
-            }
-            const formatsList = document.getElementById('formatsList');
-            formatsList.innerHTML = '';
-            data.formats.forEach(format => {
-                const formatDiv = document.createElement('div');
-                formatDiv.className = 'format-option';
-                formatDiv.innerHTML = `<strong>${format.resolution}</strong> <span style="float: right;">${format.ext.toUpperCase()} · ${format.filesize_mb} МБ</span>`;
-                formatDiv.onclick = () => selectFormat(format.format_id, formatDiv);
-                formatsList.appendChild(formatDiv);
+            sphere.addEventListener('mouseleave', () => {
+                document.body.style.cursor = 'default';
             });
-            if (data.formats.length > 0) {
-                selectFormat(data.formats[0].format_id, formatsList.firstChild);
-            }
-            document.getElementById('videoInfo').style.display = 'block';
-            showAlert('Информация о видео загружена!', 'success');
-        } catch (error) {
-            showAlert('Ошибка: ' + error.message, 'error');
-        } finally {
-            showLoader(false);
+            
+            sphere.addEventListener('click', (e) => {
+                e.stopPropagation();
+                popSphere(sphere);
+            });
+            
+            spheresContainer.appendChild(sphere);
+            spheres.push(sphere);
+            
+            setTimeout(() => {
+                if (sphere.parentNode) {
+                    sphere.remove();
+                    const index = spheres.indexOf(sphere);
+                    if (index !== -1) spheres.splice(index, 1);
+                }
+            }, 15000);
         }
-    }
-
-    function selectFormat(formatId, element) {
-        selectedFormat = formatId;
-        document.querySelectorAll('.format-option').forEach(el => el.classList.remove('selected'));
-        element.classList.add('selected');
-    }
-
-    async function downloadVideo() {
-        if (!selectedFormat || !currentVideoUrl) { showAlert('Выберите качество видео', 'error'); return; }
-        showLoader(true);
-        try {
-            const response = await fetch('/api/download', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: currentVideoUrl, format_id: selectedFormat })
+        
+        function showAchievement() {
+            if (achievementShown) return;
+            achievementShown = true;
+            
+            // Плашка "ТЫКУН!"
+            const achievementDiv = document.createElement('div');
+            achievementDiv.className = 'achievement';
+            achievementDiv.textContent = 'ТЫКУН!';
+            document.body.appendChild(achievementDiv);
+            
+            // Конфетти
+            for (let i = 0; i < 100; i++) {
+                const confetti = document.createElement('div');
+                confetti.className = 'confetti';
+                confetti.style.left = Math.random() * window.innerWidth + 'px';
+                confetti.style.backgroundColor = `hsl(${Math.random() * 360}, 100%, 50%)`;
+                confetti.style.width = Math.random() * 8 + 4 + 'px';
+                confetti.style.height = Math.random() * 8 + 4 + 'px';
+                confetti.style.animationDelay = Math.random() * 2 + 's';
+                confetti.style.animationDuration = Math.random() * 2 + 2 + 's';
+                document.body.appendChild(confetti);
+                setTimeout(() => confetti.remove(), 3000);
+            }
+            
+            setTimeout(() => {
+                achievementDiv.classList.add('achievement-fade');
+                setTimeout(() => {
+                    if (achievementDiv.parentNode) achievementDiv.remove();
+                }, 2000);
+            }, 1500);
+        }
+        
+        function popSphere(sphere) {
+            sphere.classList.add('pop-animation');
+            try {
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioCtx.createOscillator();
+                const gainNode = audioCtx.createGain();
+                oscillator.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                oscillator.frequency.value = 800;
+                gainNode.gain.value = 0.08;
+                oscillator.start();
+                gainNode.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + 0.3);
+                oscillator.stop(audioCtx.currentTime + 0.3);
+            } catch(e) {}
+            
+            score++;
+            scoreElement.textContent = score;
+            
+            if (score === 100) {
+                showAchievement();
+            }
+            
+            scoreElement.style.transform = 'scale(1.3)';
+            setTimeout(() => { scoreElement.style.transform = 'scale(1)'; }, 200);
+            
+            setTimeout(() => {
+                if (sphere.parentNode) sphere.remove();
+                const index = spheres.indexOf(sphere);
+                if (index !== -1) spheres.splice(index, 1);
+            }, 300);
+        }
+        
+        setInterval(() => {
+            if (spheres.length < 30) {
+                createSphere();
+            }
+        }, 2000);
+        
+        for (let i = 0; i < 15; i++) {
+            setTimeout(() => createSphere(), i * 300);
+        }
+        
+        window.addEventListener('resize', () => {
+            spheres.forEach(sphere => {
+                let left = parseFloat(sphere.style.left);
+                let top = parseFloat(sphere.style.top);
+                if (left + sphere.offsetWidth > window.innerWidth) {
+                    sphere.style.left = (window.innerWidth - sphere.offsetWidth - 10) + 'px';
+                }
+                if (top + sphere.offsetHeight > window.innerHeight) {
+                    sphere.style.top = (window.innerHeight - sphere.offsetHeight - 10) + 'px';
+                }
             });
-            if (!response.ok) {
+        });
+        
+        // ---------- ПЕРЕКЛЮЧЕНИЕ ТЕМЫ ----------
+        const themeToggle = document.getElementById('themeToggle');
+        const body = document.body;
+
+        function setTheme(theme) {
+            if (theme === 'light') {
+                body.classList.add('light');
+                themeToggle.innerHTML = '🌙';
+                localStorage.setItem('theme', 'light');
+            } else {
+                body.classList.remove('light');
+                themeToggle.innerHTML = '☀️';
+                localStorage.setItem('theme', 'dark');
+            }
+        }
+
+        const savedTheme = localStorage.getItem('theme');
+        if (savedTheme === 'light') {
+            setTheme('light');
+        } else {
+            setTheme('dark');
+        }
+
+        themeToggle.addEventListener('click', () => {
+            if (body.classList.contains('light')) {
+                setTheme('dark');
+            } else {
+                setTheme('light');
+            }
+        });
+        
+        // ---------- ЛОГИКА ВИДЕО ----------
+        let selectedFormat = null;
+        let currentVideoUrl = null;
+
+        function showAlert(message, type) {
+            const container = document.getElementById('alertContainer');
+            container.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
+            setTimeout(() => container.innerHTML = '', 5000);
+        }
+
+        async function getVideoInfo() {
+            const url = document.getElementById('videoUrl').value.trim();
+            if (!url) { showAlert('Введите ссылку на видео', 'error'); return; }
+            currentVideoUrl = url;
+            document.getElementById('loader').style.display = 'block';
+            document.getElementById('videoInfo').style.display = 'none';
+            try {
+                const response = await fetch('/api/video-info', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url })
+                });
                 const data = await response.json();
-                throw new Error(data.error || 'Ошибка скачивания');
+                document.getElementById('loader').style.display = 'none';
+                if (data.error) { showAlert(data.error, 'error'); return; }
+                document.getElementById('videoThumbnail').src = data.thumbnail || '';
+                document.getElementById('videoTitle').innerText = data.title;
+                if (data.duration) {
+                    const min = Math.floor(data.duration / 60);
+                    const sec = data.duration % 60;
+                    document.getElementById('videoDuration').innerHTML = `⏱️ Длительность: ${min}:${sec.toString().padStart(2, '0')}`;
+                }
+                const list = document.getElementById('formatsList');
+                list.innerHTML = '';
+                data.formats.forEach(format => {
+                    const div = document.createElement('div');
+                    div.className = 'format-card';
+                    if (!data.premium && format.resolution !== '480p') div.classList.add('format-locked');
+                    div.innerHTML = `<strong>${format.resolution}</strong><br><small>${format.ext.toUpperCase()} · ${format.filesize_mb} МБ</small>`;
+                    if (!(!data.premium && format.resolution !== '480p')) {
+                        div.onclick = () => {
+                            selectedFormat = format.format_id;
+                            document.querySelectorAll('.format-card').forEach(c => c.classList.remove('selected'));
+                            div.classList.add('selected');
+                        };
+                    }
+                    list.appendChild(div);
+                });
+                if (data.formats.length > 0 && (data.premium || data.formats[0].resolution === '480p')) {
+                    selectedFormat = data.formats[0].format_id;
+                    list.firstChild?.classList.add('selected');
+                }
+                document.getElementById('videoInfo').style.display = 'block';
+            } catch (err) {
+                document.getElementById('loader').style.display = 'none';
+                showAlert('Ошибка сервера', 'error');
             }
-            const blob = await response.blob();
-            const downloadUrl = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = downloadUrl;
-            let filename = 'video.mp4';
-            const contentDisposition = response.headers.get('Content-Disposition');
-            if (contentDisposition) {
-                const match = contentDisposition.match(/filename="?(.+)"?/);
-                if (match) filename = match[1];
-            }
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            window.URL.revokeObjectURL(downloadUrl);
-            showAlert('Видео успешно скачано! 🎉', 'success');
-        } catch (error) {
-            showAlert('Ошибка: ' + error.message, 'error');
-        } finally {
-            showLoader(false);
         }
-    }
 
-    document.getElementById('videoUrl').addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') getVideoInfo();
-    });
-</script>
+        async function downloadVideo() {
+            if (!selectedFormat || !currentVideoUrl) { showAlert('Выберите качество видео', 'error'); return; }
+            try {
+                const response = await fetch('/api/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: currentVideoUrl, format_id: selectedFormat })
+                });
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'Ошибка');
+                }
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                let filename = 'video.mp4';
+                const cd = response.headers.get('Content-Disposition');
+                if (cd) {
+                    const match = cd.match(/filename="?(.+)"?/);
+                    if (match) filename = match[1];
+                }
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+                showAlert('✅ Скачивание началось!', 'success');
+            } catch (err) {
+                showAlert('Ошибка: ' + err.message, 'error');
+            }
+        }
+
+        document.getElementById('videoUrl').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') getVideoInfo();
+        });
+    </script>
 </body>
 </html>
 """
@@ -550,7 +1149,6 @@ def api_download():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# ---------- ЗАЩИЩЁННАЯ СТРАНИЦА РЕКВИЗИТОВ (С УСЛОВИЯМИ) ----------
 @app.route('/requisites')
 def requisites_redirect():
     return redirect(url_for('index'))
@@ -562,83 +1160,41 @@ def requisites_secret():
         return "Доступ запрещён", 403
     return '''<!DOCTYPE html>
 <html>
-<head>
-    <meta charset="UTF-8">
-    <title>Реквизиты и условия</title>
-    <style>
-        body { background: #0f0c29; color: #fff; font-family: Arial; padding: 40px; }
-        .card { background: rgba(255,255,255,0.1); padding: 30px; border-radius: 20px; max-width: 700px; margin: auto; }
-        h1 { color: #a855f7; }
-        h2 { color: #f59e0b; margin-top: 20px; }
-        hr { border-color: rgba(255,255,255,0.2); }
-        ul { margin-left: 20px; }
-    </style>
+<head><meta charset="UTF-8"><title>Реквизиты</title>
+<style>body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;padding:40px}.card{background:rgba(20,20,40,0.6);backdrop-filter:blur(12px);padding:30px;border-radius:24px;max-width:700px;margin:auto;border:1px solid rgba(168,85,247,0.3)}h1{color:#a855f7}h2{color:#f59e0b}</style>
 </head>
 <body>
 <div class="card">
-    <h1>🔐 Реквизиты самозанятого</h1>
-    <p><strong>ФИО:</strong> Юренко Богдан Петрович</p>
-    <p><strong>ИНН:</strong> 231408820790</p>
-    <p><strong>Статус:</strong> Самозанятый</p>
-    <p><strong>Налог:</strong> 4% от доходов</p>
-    <hr>
-    <p><strong>Email для связи:</strong> bogdanyrenko@gmail.com</p>
-    <p><strong>Сайт:</strong> https://video-downloader-r3y6.onrender.com</p>
-
-    <h2>📋 Условия оплаты</h2>
-<ul>
-    <li>Оплата подписки Premium осуществляется банковской картой на сайте платёжной системы <strong>PayAnyWay</strong>.</li>
-    <li>Стоимость подписки — <strong>50 рублей в месяц</strong>.</li>
-    <li>Списание происходит в момент оплаты за выбранный период (30 дней).</li>
-    <li>После оплаты премиум-доступ активируется автоматически.</li>
-</ul>
-    <h2>↩️ Условия возврата</h2>
-    <ul>
-        <li>Возврат денежных средств возможен в течение 14 дней после оплаты, если подписка не была активирована или не использовалась.</li>
-        <li>Для возврата свяжитесь с поддержкой по email: <strong>bogdanyrenko@gmail.com</strong></li>
-        <li>Средства возвращаются на ту же карту, с которой производилась оплата, в течение 5-10 рабочих дней.</li>
-    </ul>
-
-    <p style="margin-top: 30px;"><a href="/" style="color: #a855f7;">← Вернуться на главную</a></p>
+<h1>🔐 Реквизиты самозанятого</h1>
+<p><strong>ФИО:</strong> Юренко Богдан Петрович</p>
+<p><strong>ИНН:</strong> 231408820790</p>
+<p><strong>Статус:</strong> Самозанятый</p>
+<hr>
+<p><strong>Email:</strong> bogdanyrenko@gmail.com</p>
+<p><strong>Сайт:</strong> https://video-downloader-r3y6.onrender.com</p>
+<h2>📋 Условия оплаты</h2>
+<ul><li>Оплата через банковскую карту</li><li>Стоимость: 50₽/месяц</li></ul>
+<h2>↩️ Условия возврата</h2>
+<ul><li>Возврат в течение 14 дней</li><li>Связь: bogdanyrenko@gmail.com</li></ul>
 </div>
 </body>
 </html>'''
 
-# ---------- СТРАНИЦА ПОЛИТИКИ ВОЗВРАТА (ОТДЕЛЬНО) ----------
 @app.route('/return-policy')
 def return_policy():
     return '''<!DOCTYPE html>
 <html>
-<head>
-    <meta charset="UTF-8">
-    <title>Условия возврата и оплаты</title>
-    <style>
-        body { background: #0f0c29; color: #fff; font-family: Arial; padding: 40px; }
-        .card { background: rgba(255,255,255,0.1); padding: 30px; border-radius: 20px; max-width: 700px; margin: auto; }
-        h1 { color: #a855f7; }
-        h2 { color: #f59e0b; margin-top: 20px; }
-        a { color: #a855f7; }
-    </style>
+<head><meta charset="UTF-8"><title>Условия возврата</title>
+<style>body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;padding:40px}.card{background:rgba(20,20,40,0.6);backdrop-filter:blur(12px);padding:30px;border-radius:24px;max-width:700px;margin:auto;border:1px solid rgba(168,85,247,0.3)}h1{color:#a855f7}</style>
 </head>
 <body>
 <div class="card">
-    <h1>📋 Политика возврата и условия оплаты</h1>
-
-   <h2>Условия оплаты</h2>
-<ul>
-    <li>Оплата подписки Premium осуществляется банковской картой на сайте платёжной системы <strong>PayAnyWay</strong>.</li>
-    <li>Стоимость подписки — <strong>50 рублей в месяц</strong>.</li>
-    <li>Списание происходит в момент оплаты за выбранный период (30 дней).</li>
-    <li>После оплаты премиум-доступ активируется автоматически.</li>
-</ul>
-    <h2>Условия возврата</h2>
-    <ul>
-        <li>Возврат денежных средств возможен в течение <strong>14 дней</strong> после оплаты, если подписка не была активирована или не использовалась.</li>
-        <li>Для возврата свяжитесь с поддержкой по email: <strong>bogdanyrenko@gmail.com</strong></li>
-        <li>Средства возвращаются на ту же карту, с которой производилась оплата, в течение 5-10 рабочих дней.</li>
-    </ul>
-
-    <p style="margin-top: 30px;"><a href="/">← Вернуться на главную</a></p>
+<h1>📋 Политика возврата</h1>
+<h2>Условия оплаты</h2>
+<ul><li>Оплата через банковскую карту</li><li>Стоимость: 50₽/месяц</li></ul>
+<h2>Условия возврата</h2>
+<ul><li>Возврат в течение 14 дней</li><li>Для возврата: bogdanyrenko@gmail.com</li></ul>
+<a href="/">← На главную</a>
 </div>
 </body>
 </html>'''
@@ -648,32 +1204,25 @@ def create_payment():
     uid = get_user_id()
     return f'''<!DOCTYPE html>
 <html>
-<head>
-    <meta charset="UTF-8">
-    <title>Оплата подписки</title>
-    <style>
-        body {{ font-family: Arial; padding: 40px; background: #0f0c29; color: white; text-align: center; }}
-        .container {{ max-width: 400px; margin: auto; background: rgba(255,255,255,0.1); padding: 30px; border-radius: 20px; }}
-        button {{ background: #f59e0b; color: #333; padding: 15px 30px; border: none; border-radius: 30px; font-size: 18px; font-weight: bold; cursor: pointer; }}
-        a {{ color: #a855f7; }}
-    </style>
+<head><meta charset="UTF-8"><title>Оплата</title>
+<style>body{{background:#0f0f1a;color:#e0e0e0;text-align:center;padding:40px}}.container{{max-width:400px;margin:auto;background:rgba(20,20,40,0.6);backdrop-filter:blur(12px);padding:30px;border-radius:24px;border:1px solid rgba(168,85,247,0.3)}}button{{background:#f59e0b;padding:15px 30px;border:none;border-radius:30px;font-size:18px;cursor:pointer;color:white;font-weight:bold}}</style>
 </head>
 <body>
-    <div class="container">
-        <h1>💎 Premium подписка</h1>
-        <p>Стоимость: <strong>50 ₽ / месяц</strong></p>
-        <form action="https://merchant.intellectmoney.ru/ru/payment/" method="POST">
-            <input type="hidden" name="eshopId" value="472541">
-            <input type="hidden" name="paymentAmount" value="50">
-            <input type="hidden" name="paymentCurrency" value="RUB">
-            <input type="hidden" name="paymentDesc" value="Premium подписка на 30 дней">
-            <input type="hidden" name="successUrl" value="https://video-downloader-r3y6.onrender.com/payment_success">
-            <input type="hidden" name="failUrl" value="https://video-downloader-r3y6.onrender.com/create_payment">
-            <input type="hidden" name="user_id" value="{uid}">
-            <button type="submit">Перейти к оплате 50 ₽</button>
-        </form>
-        <p style="margin-top: 20px;"><a href="/return-policy">📋 Политика возврата</a> | <a href="/">← На главную</a></p>
-    </div>
+<div class="container">
+<h1>💎 Premium подписка</h1>
+<p><strong>50 ₽ / месяц</strong></p>
+<form action="https://merchant.intellectmoney.ru/ru/payment/" method="POST">
+<input type="hidden" name="eshopId" value="472541">
+<input type="hidden" name="paymentAmount" value="50">
+<input type="hidden" name="paymentCurrency" value="RUB">
+<input type="hidden" name="paymentDesc" value="Premium подписка на 30 дней">
+<input type="hidden" name="successUrl" value="https://video-downloader-r3y6.onrender.com/payment_success">
+<input type="hidden" name="failUrl" value="https://video-downloader-r3y6.onrender.com/create_payment">
+<input type="hidden" name="user_id" value="{uid}">
+<button type="submit">Перейти к оплате 50 ₽</button>
+</form>
+<a href="/return-policy">📋 Политика возврата</a> | <a href="/">← На главную</a>
+</div>
 </body>
 </html>'''
 
@@ -681,43 +1230,12 @@ def create_payment():
 def payment_success():
     if request.method == 'POST':
         data = request.form
-        logger.info(f"Получено уведомление: {data}")
         if data.get('paymentStatus') == '5':
             uid = data.get('user_id')
             if uid:
                 add_premium(uid, 30)
-                logger.info(f"Премиум активирован для {uid}")
         return 'OK', 200
-    return '''
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Оплата прошла успешно</title>
-    <meta http-equiv="refresh" content="3;url=/">
-    <style>
-        body { font-family: Arial; text-align: center; padding: 50px; background: #0f0c29; color: white; }
-        h1 { color: #22c55e; }
-        .loader {
-            margin: 20px auto;
-            width: 40px;
-            height: 40px;
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #22c55e;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin { 100% { transform: rotate(360deg); } }
-    </style>
-</head>
-<body>
-    <div class="loader"></div>
-    <h1>✅ Спасибо за оплату!</h1>
-    <p>Ваша премиум-подписка активирована.</p>
-    <p>Через 3 секунды вы вернётесь на главную страницу.</p>
-    <a href="/" style="color: #a855f7;">Вернуться сейчас</a>
-</body>
-</html>'''
+    return '''<html><head><meta http-equiv="refresh" content="2;url=/"></head><body><h1>✅ Оплата прошла</h1><p>Возврат...</p></body></html>'''
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
