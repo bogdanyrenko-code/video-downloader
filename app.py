@@ -34,6 +34,8 @@ MAX_VIDEO_SIZE_PREMIUM_MB = 500
 CLEANUP_INTERVAL = 3600
 FILE_RETENTION_TIME = 1800
 
+SECRET_REQUISITES_KEY = "Bogdan2025Secure"
+
 def load_premium_users():
     global PREMIUM_USERS
     if os.path.exists(PREMIUM_FILE):
@@ -48,8 +50,6 @@ def load_premium_users():
                 logger.info(f"Загружено {len(PREMIUM_USERS)} премиум-пользователей")
         except Exception as e:
             logger.error(f"Ошибка загрузки: {e}")
-    else:
-        PREMIUM_USERS = {}
 
 def save_premium_users():
     try:
@@ -140,16 +140,13 @@ def extract_rutube_id(url):
     match = re.search(r'rutube\.ru/video/([a-f0-9]+)', url)
     if match:
         return match.group(1)
-    match = re.search(r'rutube\.ru/embed/([a-f0-9]+)', url)
-    if match:
-        return match.group(1)
     return None
 
 def get_rutube_video_info(url):
     video_id = extract_rutube_id(url)
     if not video_id:
         return None, "Не удалось определить ID видео"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': 'application/json'}
+    headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json'}
     try:
         api_url = f"https://rutube.ru/api/video/{video_id}/"
         resp = requests.get(api_url, headers=headers, timeout=20)
@@ -159,18 +156,6 @@ def get_rutube_video_info(url):
             return {'title': data.get('title', 'RuTube видео'), 'thumbnail': data.get('thumbnail_url', ''), 'duration': data.get('duration', 0), 'formats': formats}, None
         return None, "Не удалось получить информацию о видео"
     except Exception as e:
-        logger.error(f"Ошибка получения RuTube видео: {e}")
-        return None, str(e)
-
-def download_rutube_video(url, format_id='best'):
-    try:
-        ydl_opts = {'format': 'best', 'outtmpl': os.path.join(DOWNLOAD_FOLDER, '%(id)s.%(ext)s'), 'quiet': True, 'no_warnings': True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            return filename, None
-    except Exception as e:
-        logger.error(f"Ошибка скачивания RuTube: {e}")
         return None, str(e)
 
 def get_video_info(url):
@@ -197,12 +182,9 @@ def get_video_info(url):
                             seen_resolutions.add(res_str)
             return {'title': info.get('title', 'Видео'), 'thumbnail': info.get('thumbnail', ''), 'duration': info.get('duration', 0), 'formats': sorted(formats, key=lambda x: int(x['resolution'].replace('p', '')), reverse=True)}, None
     except Exception as e:
-        logger.error(f"Ошибка получения информации о видео: {e}")
         return None, str(e)
 
 def download_video(url, format_id='best'):
-    if 'rutube.ru' in url:
-        return download_rutube_video(url, format_id)
     try:
         output_template = os.path.join(DOWNLOAD_FOLDER, f'{uuid.uuid4()}.%(ext)s')
         ydl_opts = {'format': format_id if format_id != 'best' else 'best', 'outtmpl': output_template, 'quiet': True, 'no_warnings': True, 'ignoreerrors': True}
@@ -219,10 +201,11 @@ def download_video(url, format_id='best'):
                 return filename, None
             return None, "Не удалось скачать видео"
     except Exception as e:
-        logger.error(f"Ошибка скачивания видео: {e}")
         return None, str(e)
 
-HTML_TEMPLATE = """<!DOCTYPE html>
+# ---------- HTML ШАБЛОН (оригинальный красивый) ----------
+HTML_TEMPLATE = """
+<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -230,34 +213,109 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <title>VideoSave — Скачивай видео легко</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
         .container { max-width: 800px; margin: 0 auto; }
         .header { text-align: center; color: white; margin-bottom: 40px; }
         .header h1 { font-size: 3em; margin-bottom: 10px; text-shadow: 2px 2px 4px rgba(0,0,0,0.2); }
         .header p { font-size: 1.2em; opacity: 0.9; }
-        .card { background: white; border-radius: 20px; padding: 30px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); margin-bottom: 20px; }
-        .premium-badge { display: inline-block; background: linear-gradient(135deg, #ffd700, #ffed4e); color: #333; padding: 5px 15px; border-radius: 20px; font-weight: bold; font-size: 0.9em; margin-left: 10px; }
-        .user-info { background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 20px; }
+        .card {
+            background: white;
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            margin-bottom: 20px;
+        }
+        .premium-badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #ffd700, #ffed4e);
+            color: #333;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 0.9em;
+            margin-left: 10px;
+        }
+        .user-info {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
         .input-group { margin-bottom: 20px; }
         .input-group label { display: block; margin-bottom: 8px; font-weight: 600; color: #333; }
-        .input-group input, .input-group select { width: 100%; padding: 15px; border: 2px solid #e0e0e0; border-radius: 10px; font-size: 16px; transition: all 0.3s; }
-        .input-group input:focus, .input-group select:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1); }
-        .btn { width: 100%; padding: 15px; border: none; border-radius: 10px; font-size: 18px; font-weight: 600; cursor: pointer; transition: all 0.3s; text-transform: uppercase; letter-spacing: 1px; }
-        .btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .input-group input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 16px;
+            transition: all 0.3s;
+        }
+        .input-group input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        .btn {
+            width: 100%;
+            padding: 15px;
+            border: none;
+            border-radius: 10px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
         .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3); }
-        .btn-success { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); color: white; margin-top: 10px; }
+        .btn-success {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+            margin-top: 10px;
+        }
         .btn-success:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(56, 239, 125, 0.3); }
-        .video-info { display: none; margin-top: 20px; padding: 20px; background: #f8f9fa; border-radius: 10px; }
+        .video-info {
+            display: none;
+            margin-top: 20px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
         .video-info img { width: 100%; border-radius: 10px; margin-bottom: 15px; }
         .formats { display: grid; gap: 10px; margin-top: 15px; }
-        .format-option { padding: 12px; background: white; border: 2px solid #e0e0e0; border-radius: 8px; cursor: pointer; transition: all 0.3s; }
+        .format-option {
+            padding: 12px;
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
         .format-option:hover { border-color: #667eea; background: #f0f4ff; }
         .format-option.selected { border-color: #667eea; background: #e8eeff; }
         .alert { padding: 15px; border-radius: 10px; margin-bottom: 20px; }
         .alert-error { background: #fee; color: #c33; border: 1px solid #fcc; }
         .alert-success { background: #efe; color: #3c3; border: 1px solid #cfc; }
         .loader { display: none; text-align: center; padding: 20px; }
-        .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #667eea; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto; }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
         @keyframes spin { 100% { transform: rotate(360deg); } }
         .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-top: 30px; }
         .feature { text-align: center; color: white; }
@@ -348,7 +406,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         showLoader(true);
         document.getElementById('videoInfo').style.display = 'none';
         try {
-            const response = await fetch('/api/video-info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: url }) });
+            const response = await fetch('/api/video-info', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: url })
+            });
             const data = await response.json();
             if (data.error) { showAlert(data.error, 'error'); return; }
             document.getElementById('videoThumbnail').src = data.thumbnail || '';
@@ -367,10 +429,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 formatDiv.onclick = () => selectFormat(format.format_id, formatDiv);
                 formatsList.appendChild(formatDiv);
             });
-            if (data.formats.length > 0) { selectFormat(data.formats[0].format_id, formatsList.firstChild); }
+            if (data.formats.length > 0) {
+                selectFormat(data.formats[0].format_id, formatsList.firstChild);
+            }
             document.getElementById('videoInfo').style.display = 'block';
             showAlert('Информация о видео загружена!', 'success');
-        } catch (error) { showAlert('Ошибка: ' + error.message, 'error'); } finally { showLoader(false); }
+        } catch (error) {
+            showAlert('Ошибка: ' + error.message, 'error');
+        } finally {
+            showLoader(false);
+        }
     }
 
     function selectFormat(formatId, element) {
@@ -383,116 +451,204 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         if (!selectedFormat || !currentVideoUrl) { showAlert('Выберите качество видео', 'error'); return; }
         showLoader(true);
         try {
-            const response = await fetch('/api/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: currentVideoUrl, format_id: selectedFormat }) });
-            if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Ошибка скачивания'); }
+            const response = await fetch('/api/download', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: currentVideoUrl, format_id: selectedFormat })
+            });
+            if (!response.ok) {
+                const data = await response.json();
+                throw new Error(data.error || 'Ошибка скачивания');
+            }
             const blob = await response.blob();
             const downloadUrl = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = downloadUrl;
             let filename = 'video.mp4';
             const contentDisposition = response.headers.get('Content-Disposition');
-            if (contentDisposition) { const match = contentDisposition.match(/filename="?(.+)"?/); if (match) filename = match[1]; }
+            if (contentDisposition) {
+                const match = contentDisposition.match(/filename="?(.+)"?/);
+                if (match) filename = match[1];
+            }
             a.download = filename;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
             window.URL.revokeObjectURL(downloadUrl);
             showAlert('Видео успешно скачано! 🎉', 'success');
-        } catch (error) { showAlert('Ошибка: ' + error.message, 'error'); } finally { showLoader(false); }
+        } catch (error) {
+            showAlert('Ошибка: ' + error.message, 'error');
+        } finally {
+            showLoader(false);
+        }
     }
 
-    document.getElementById('videoUrl').addEventListener('keypress', function(e) { if (e.key === 'Enter') getVideoInfo(); });
+    document.getElementById('videoUrl').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') getVideoInfo();
+    });
 </script>
 </body>
-</html>"""
+</html>
+"""
 
-# ---------- Flask Routes ----------
+# ---------- МАРШРУТЫ ----------
 @app.route('/')
 def index():
-    user_id = get_user_id()
+    uid = get_user_id()
     today = datetime.now().strftime('%Y-%m-%d')
-    downloads_today = DOWNLOAD_STATS.get(user_id, {}).get(today, 0)
-    premium_expire = PREMIUM_USERS[user_id]['expire'] if is_premium(user_id) else None
-    return render_template_string(HTML_TEMPLATE, is_premium=is_premium(user_id), premium_expire=premium_expire, downloads_today=downloads_today, max_downloads=MAX_FREE_DOWNLOADS_PER_DAY)
+    downloads = DOWNLOAD_STATS.get(uid, {}).get(today, 0)
+    expire = PREMIUM_USERS[uid]['expire'] if is_premium(uid) else None
+    return render_template_string(HTML_TEMPLATE, is_premium=is_premium(uid), premium_expire=expire, downloads_today=downloads, max_downloads=MAX_FREE_DOWNLOADS_PER_DAY)
 
 @app.route('/api/video-info', methods=['POST'])
-@rate_limit(max_requests=20, window=60)
+@rate_limit(20, 60)
 def api_video_info():
     try:
         data = request.get_json()
         url = data.get('url', '').strip()
         if not url:
             return jsonify({'error': 'URL не указан'}), 400
-        user_id = get_user_id()
-        can_download, error = check_download_limit(user_id)
-        if not can_download:
-            return jsonify({'error': error}), 403
-        info, error = get_video_info(url)
-        if error:
-            return jsonify({'error': error}), 400
+        uid = get_user_id()
+        ok, err = check_download_limit(uid)
+        if not ok:
+            return jsonify({'error': err}), 403
+        info, err = get_video_info(url)
+        if err:
+            return jsonify({'error': err}), 400
         return jsonify(info)
     except Exception as e:
-        logger.error(f"Ошибка в api_video_info: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/download', methods=['POST'])
-@rate_limit(max_requests=10, window=60)
+@rate_limit(10, 60)
 def api_download():
     try:
         data = request.get_json()
         url = data.get('url', '').strip()
-        format_id = data.get('format_id', 'best')
+        fid = data.get('format_id', 'best')
         if not url:
             return jsonify({'error': 'URL не указан'}), 400
-        user_id = get_user_id()
-        can_download, error = check_download_limit(user_id)
-        if not can_download:
-            return jsonify({'error': error}), 403
-        filepath, error = download_video(url, format_id)
-        if error:
-            return jsonify({'error': error}), 400
-        if not filepath or not os.path.exists(filepath):
-            return jsonify({'error': 'Не удалось скачать видео'}), 500
-        increment_download_count(user_id)
-
+        uid = get_user_id()
+        ok, err = check_download_limit(uid)
+        if not ok:
+            return jsonify({'error': err}), 403
+        path, err = download_video(url, fid)
+        if err:
+            return jsonify({'error': err}), 400
+        if not path or not os.path.exists(path):
+            return jsonify({'error': 'Не удалось скачать'}), 500
+        increment_download_count(uid)
         @after_this_request
-        def remove_file(response):
+        def remove(resp):
             try:
-                if os.path.exists(filepath):
-                    os.remove(filepath)
-                    logger.info(f"Файл удален: {filepath}")
-            except Exception as e:
-                logger.error(f"Ошибка удаления файла: {e}")
-            return response
-
-        filename = os.path.basename(filepath)
-        return send_file(filepath, as_attachment=True, download_name=filename, mimetype='video/mp4')
+                if os.path.exists(path):
+                    os.remove(path)
+            except:
+                pass
+            return resp
+        return send_file(path, as_attachment=True, download_name='video.mp4')
     except Exception as e:
-        logger.error(f"Ошибка в api_download: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/premium', methods=['POST'])
-def premium():
-    user_id = get_user_id()
-    days = int(request.form.get('days', 30))
-    add_premium(user_id, days)
+# ---------- ЗАЩИЩЁННАЯ СТРАНИЦА РЕКВИЗИТОВ (С УСЛОВИЯМИ) ----------
+@app.route('/requisites')
+def requisites_redirect():
     return redirect(url_for('index'))
 
-@app.route('/api/stats')
-def api_stats():
-    total_users = len(set(list(PREMIUM_USERS.keys()) + list(DOWNLOAD_STATS.keys())))
-    premium_users = len(PREMIUM_USERS)
-    total_downloads = sum(sum(daily.values()) for daily in DOWNLOAD_STATS.values())
-    return jsonify({'total_users': total_users, 'premium_users': premium_users, 'total_downloads': total_downloads, 'active_sessions': len(USER_SESSIONS)})
+@app.route('/requisites/secret')
+def requisites_secret():
+    key = request.args.get('key')
+    if key != SECRET_REQUISITES_KEY:
+        return "Доступ запрещён", 403
+    return '''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Реквизиты и условия</title>
+    <style>
+        body { background: #0f0c29; color: #fff; font-family: Arial; padding: 40px; }
+        .card { background: rgba(255,255,255,0.1); padding: 30px; border-radius: 20px; max-width: 700px; margin: auto; }
+        h1 { color: #a855f7; }
+        h2 { color: #f59e0b; margin-top: 20px; }
+        hr { border-color: rgba(255,255,255,0.2); }
+        ul { margin-left: 20px; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <h1>🔐 Реквизиты самозанятого</h1>
+    <p><strong>ФИО:</strong> Юренко Богдан Петрович</p>
+    <p><strong>ИНН:</strong> 231408820790</p>
+    <p><strong>Статус:</strong> Самозанятый</p>
+    <p><strong>Налог:</strong> 4% от доходов</p>
+    <hr>
+    <p><strong>Email для связи:</strong> bogdanyrenko@gmail.com</p>
+    <p><strong>Сайт:</strong> https://video-downloader-r3y6.onrender.com</p>
+
+    <h2>📋 Условия оплаты</h2>
+    <ul>
+        <li>Оплата подписки Premium осуществляется банковской картой на сайте платёжной системы IntellectMoney.</li>
+        <li>Стоимость подписки — 50 рублей в месяц.</li>
+        <li>Списание происходит в момент оплаты за выбранный период (30 дней).</li>
+        <li>После оплаты премиум-доступ активируется автоматически.</li>
+    </ul>
+
+    <h2>↩️ Условия возврата</h2>
+    <ul>
+        <li>Возврат денежных средств возможен в течение 14 дней после оплаты, если подписка не была активирована или не использовалась.</li>
+        <li>Для возврата свяжитесь с поддержкой по email: <strong>bogdanyrenko@gmail.com</strong></li>
+        <li>Средства возвращаются на ту же карту, с которой производилась оплата, в течение 5-10 рабочих дней.</li>
+    </ul>
+
+    <p style="margin-top: 30px;"><a href="/" style="color: #a855f7;">← Вернуться на главную</a></p>
+</div>
+</body>
+</html>'''
+
+# ---------- СТРАНИЦА ПОЛИТИКИ ВОЗВРАТА (ОТДЕЛЬНО) ----------
+@app.route('/return-policy')
+def return_policy():
+    return '''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Условия возврата и оплаты</title>
+    <style>
+        body { background: #0f0c29; color: #fff; font-family: Arial; padding: 40px; }
+        .card { background: rgba(255,255,255,0.1); padding: 30px; border-radius: 20px; max-width: 700px; margin: auto; }
+        h1 { color: #a855f7; }
+        h2 { color: #f59e0b; margin-top: 20px; }
+        a { color: #a855f7; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <h1>📋 Политика возврата и условия оплаты</h1>
+
+    <h2>Условия оплаты</h2>
+    <ul>
+        <li>Оплата подписки Premium осуществляется банковской картой на сайте платёжной системы IntellectMoney.</li>
+        <li>Стоимость подписки — <strong>50 рублей в месяц</strong>.</li>
+        <li>Списание происходит в момент оплаты за выбранный период (30 дней).</li>
+        <li>После оплаты премиум-доступ активируется автоматически.</li>
+    </ul>
+
+    <h2>Условия возврата</h2>
+    <ul>
+        <li>Возврат денежных средств возможен в течение <strong>14 дней</strong> после оплаты, если подписка не была активирована или не использовалась.</li>
+        <li>Для возврата свяжитесь с поддержкой по email: <strong>bogdanyrenko@gmail.com</strong></li>
+        <li>Средства возвращаются на ту же карту, с которой производилась оплата, в течение 5-10 рабочих дней.</li>
+    </ul>
+
+    <p style="margin-top: 30px;"><a href="/">← Вернуться на главную</a></p>
+</div>
+</body>
+</html>'''
 
 @app.route('/create_payment')
 def create_payment():
-    user_id = get_user_id()
-    # Ваша рабочая ссылка из IntellectMoney (с хэшем)
-    base_url = "https://merchant.intellectmoney.ru/v2/ru/prepare/"
-    payment_url = f"{base_url}?EshopId=472541&ServiceName=Premium%20%D0%BF%D0%BE%D0%B4%D0%BF%D0%B8%D1%81%D0%BA%D0%B0%20%D0%BD%D0%B0%2030%20%D0%B4%D0%BD%D0%B5%D0%B9&ServiceNameAuthor=0&PaymentAmount=50&PaymentCurrency=RUB&PaymentAmountIsReadonly=false&ButtonName=0&OpenNewWindow=true&UserFullName=&UserEmail=true&PhoneNumber=&SuccessUrl=https%3A%2F%2Fvideo-downloader-r3y6.onrender.com%2Fpayment_success&MerchantReceipt=&Comment=&CommentTip=&Hash=2308f61b4788ab0459a172191dcbd244&PayerData=&Email=&user_id={user_id}"
-    return f'''
-<!DOCTYPE html>
+    uid = get_user_id()
+    return f'''<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
@@ -500,7 +656,7 @@ def create_payment():
     <style>
         body {{ font-family: Arial; padding: 40px; background: #0f0c29; color: white; text-align: center; }}
         .container {{ max-width: 400px; margin: auto; background: rgba(255,255,255,0.1); padding: 30px; border-radius: 20px; }}
-        a.button {{ display: inline-block; background: #f59e0b; color: #333; padding: 15px 30px; border-radius: 30px; font-size: 18px; font-weight: bold; text-decoration: none; margin-top: 20px; }}
+        button {{ background: #f59e0b; color: #333; padding: 15px 30px; border: none; border-radius: 30px; font-size: 18px; font-weight: bold; cursor: pointer; }}
         a {{ color: #a855f7; }}
     </style>
 </head>
@@ -508,11 +664,62 @@ def create_payment():
     <div class="container">
         <h1>💎 Premium подписка</h1>
         <p>Стоимость: <strong>50 ₽ / месяц</strong></p>
-        <a href="{payment_url}" class="button" target="_blank">Перейти к оплате 50 ₽</a>
-        <p style="margin-top: 20px;"><a href="/">← Вернуться на главную</a></p>
+        <form action="https://merchant.intellectmoney.ru/ru/payment/" method="POST">
+            <input type="hidden" name="eshopId" value="472541">
+            <input type="hidden" name="paymentAmount" value="50">
+            <input type="hidden" name="paymentCurrency" value="RUB">
+            <input type="hidden" name="paymentDesc" value="Premium подписка на 30 дней">
+            <input type="hidden" name="successUrl" value="https://video-downloader-r3y6.onrender.com/payment_success">
+            <input type="hidden" name="failUrl" value="https://video-downloader-r3y6.onrender.com/create_payment">
+            <input type="hidden" name="user_id" value="{uid}">
+            <button type="submit">Перейти к оплате 50 ₽</button>
+        </form>
+        <p style="margin-top: 20px;"><a href="/return-policy">📋 Политика возврата</a> | <a href="/">← На главную</a></p>
     </div>
 </body>
-</html>
-    '''
+</html>'''
+
+@app.route('/payment_success', methods=['GET', 'POST'])
+def payment_success():
+    if request.method == 'POST':
+        data = request.form
+        logger.info(f"Получено уведомление: {data}")
+        if data.get('paymentStatus') == '5':
+            uid = data.get('user_id')
+            if uid:
+                add_premium(uid, 30)
+                logger.info(f"Премиум активирован для {uid}")
+        return 'OK', 200
+    return '''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Оплата прошла успешно</title>
+    <meta http-equiv="refresh" content="3;url=/">
+    <style>
+        body { font-family: Arial; text-align: center; padding: 50px; background: #0f0c29; color: white; }
+        h1 { color: #22c55e; }
+        .loader {
+            margin: 20px auto;
+            width: 40px;
+            height: 40px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #22c55e;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="loader"></div>
+    <h1>✅ Спасибо за оплату!</h1>
+    <p>Ваша премиум-подписка активирована.</p>
+    <p>Через 3 секунды вы вернётесь на главную страницу.</p>
+    <a href="/" style="color: #a855f7;">Вернуться сейчас</a>
+</body>
+</html>'''
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
