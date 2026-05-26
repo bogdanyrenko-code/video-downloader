@@ -488,6 +488,9 @@ def api_stats():
 @app.route('/create_payment')
 def create_payment():
     user_id = get_user_id()
+    # Ваша рабочая ссылка из IntellectMoney (с хэшем)
+    base_url = "https://merchant.intellectmoney.ru/v2/ru/prepare/"
+    payment_url = f"{base_url}?EshopId=472541&ServiceName=Premium%20%D0%BF%D0%BE%D0%B4%D0%BF%D0%B8%D1%81%D0%BA%D0%B0%20%D0%BD%D0%B0%2030%20%D0%B4%D0%BD%D0%B5%D0%B9&ServiceNameAuthor=0&PaymentAmount=50&PaymentCurrency=RUB&PaymentAmountIsReadonly=false&ButtonName=0&OpenNewWindow=true&UserFullName=&UserEmail=true&PhoneNumber=&SuccessUrl=https%3A%2F%2Fvideo-downloader-r3y6.onrender.com%2Fpayment_success&MerchantReceipt=&Comment=&CommentTip=&Hash=2308f61b4788ab0459a172191dcbd244&PayerData=&Email=&user_id={user_id}"
     return f'''
 <!DOCTYPE html>
 <html>
@@ -497,24 +500,15 @@ def create_payment():
     <style>
         body {{ font-family: Arial; padding: 40px; background: #0f0c29; color: white; text-align: center; }}
         .container {{ max-width: 400px; margin: auto; background: rgba(255,255,255,0.1); padding: 30px; border-radius: 20px; }}
-        button {{ background: #f59e0b; color: #333; padding: 15px 30px; border: none; border-radius: 30px; font-size: 18px; font-weight: bold; cursor: pointer; }}
-        a {{ color: #a855f7; text-decoration: none; }}
+        a.button {{ display: inline-block; background: #f59e0b; color: #333; padding: 15px 30px; border-radius: 30px; font-size: 18px; font-weight: bold; text-decoration: none; margin-top: 20px; }}
+        a {{ color: #a855f7; }}
     </style>
 </head>
 <body>
     <div class="container">
         <h1>💎 Premium подписка</h1>
         <p>Стоимость: <strong>50 ₽ / месяц</strong></p>
-        <form action="https://merchant.intellectmoney.ru/ru/payment/" method="POST">
-            <input type="hidden" name="eshopId" value="472541">
-            <input type="hidden" name="paymentAmount" value="50">
-            <input type="hidden" name="paymentCurrency" value="RUB">
-            <input type="hidden" name="paymentDesc" value="Premium подписка на 30 дней">
-            <input type="hidden" name="successUrl" value="https://video-downloader-r3y6.onrender.com/payment_success">
-            <input type="hidden" name="failUrl" value="https://video-downloader-r3y6.onrender.com/create_payment">
-            <input type="hidden" name="user_id" value="{user_id}">
-            <button type="submit">Перейти к оплате 50 ₽</button>
-        </form>
+        <a href="{payment_url}" class="button" target="_blank">Перейти к оплате 50 ₽</a>
         <p style="margin-top: 20px;"><a href="/">← Вернуться на главную</a></p>
     </div>
 </body>
