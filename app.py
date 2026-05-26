@@ -1,5 +1,3 @@
-
-
 import os
 import uuid
 import time
@@ -741,31 +739,23 @@ def payment_success():
         data = request.form
         logger.info(f"Получено уведомление: {data}")
         
-        # Проверяем статус платежа
-        if data.get('paymentStatus') == '5':  # 5 = успешно оплачен
+        if data.get('paymentStatus') == '5':
             user_id = data.get('user_id')
             if user_id:
                 add_premium(user_id, 30)
                 logger.info(f"✅ Премиум активирован для {user_id} через уведомление")
-            else:
-                logger.warning("Не передан user_id в уведомлении")
         return 'OK', 200
     
-    # Если это GET-запрос (пользователь вернулся с оплаты)
-    user_id = get_user_id()
-    add_premium(user_id, 30)
-    logger.info(f"Премиум активирован для {user_id} после возврата с оплаты")
-    
+    # Если это GET-запрос (пользователь открыл страницу вручную или вернулся с оплаты)
     return '''
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Оплата прошла успешно</title>
-    <meta http-equiv="refresh" content="3;url=/">
+    <title>Страница оплаты</title>
+    <meta http-equiv="refresh" content="2;url=/">
     <style>
         body { font-family: Arial; text-align: center; padding: 50px; background: #0f0c29; color: white; }
-        h1 { color: #22c55e; }
         .loader {
             margin: 20px auto;
             width: 40px;
@@ -780,9 +770,8 @@ def payment_success():
 </head>
 <body>
     <div class="loader"></div>
-    <h1>✅ Спасибо за оплату!</h1>
-    <p>Ваша премиум-подписка активирована.</p>
-    <p>Через 3 секунды вы вернётесь на главную страницу.</p>
+    <h1>🔄 Перенаправление...</h1>
+    <p>Через секунду вы вернётесь на главную страницу.</p>
     <a href="/" style="color: #a855f7;">Вернуться сейчас</a>
 </body>
 </html>
