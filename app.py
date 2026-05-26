@@ -428,15 +428,12 @@ HTML_TEMPLATE = """
             <div class="feature"><div class="feature-icon">⚡</div><h3>Приоритет</h3><p>Быстрая скорость</p></div>
             <div class="feature"><div class="feature-icon">🎯</div><h3>HD качество</h3><p>До 4K разрешения</p></div>
         </div>
-        <form action="/premium" method="POST" style="margin-top: 30px;">
-            <input type="hidden" name="days" value="30">
-            <button type="submit" class="btn" style="width: auto; background: #ffd700; color: #333; display: block; margin: 0 auto;">🌟 Получить Premium за 199₽/месяц</button>
-        </form>
+        <a href="/create_payment" class="btn" style="background: #ffd700; color: #333; display: inline-block; width: auto; margin: 0 auto; text-decoration: none;">🌟 Получить Premium за 50₽/месяц</a>
     </div>
     {% endif %}
     <div class="card" style="text-align: center; font-size: 0.9em; color: #666;">
         <p>Сделано с ❤️ для удобного скачивания видео</p>
-        <p style="margin-top: 10px;">© 2025 VideoSave. Все права защищены.</p>
+        <p style="margin-top: 10px;">© 2026 VideoSave. Все права защищены.</p>
     </div>
 </div>
 <script>
@@ -634,6 +631,7 @@ def api_stats():
         'total_downloads': total_downloads,
         'active_sessions': len(USER_SESSIONS)
     })
+
 @app.route('/requisites')
 def requisites():
     return '''<!DOCTYPE html>
@@ -657,6 +655,57 @@ def requisites():
     </div>
 </body>
 </html>'''
+
+# ---------- СТРАНИЦА ОПЛАТЫ (IntellectMoney) ----------
+@app.route('/create_payment')
+def create_payment():
+    return '''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Оплата подписки</title>
+    <style>
+        body { font-family: Arial; padding: 40px; background: #0f0c29; color: white; text-align: center; }
+        .container { max-width: 600px; margin: auto; background: rgba(255,255,255,0.1); padding: 30px; border-radius: 20px; }
+        iframe { width: 100%; min-height: 550px; border: none; border-radius: 12px; }
+        .info { margin-top: 20px; font-size: 14px; opacity: 0.7; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>💎 Оформление Premium</h1>
+        <p>Стоимость подписки: <strong>10 ₽ / месяц</strong> (тестовый период)</p>
+        <p>После оплаты премиум активируется автоматически</p>
+        <iframe src="https://merchant.intellectmoney.ru/v2/ru/prepare/?EshopId=472541&ServiceName=Premium%20%D0%BF%D0%BE%D0%B4%D0%BF%D0%B8%D1%81%D0%BA%D0%B0%20%D0%BD%D0%B0%2030%20%D0%B4%D0%BD%D0%B5%D0%B9&ServiceNameAuthor=0&PaymentAmount=10&PaymentCurrency=RUB&PaymentAmountIsReadonly=false&ButtonName=0&OpenNewWindow=true&UserFullName=&UserEmail=true&PhoneNumber=&SuccessUrl=https%3A%2F%2Fvideo-downloader.onrender.com%2Fpayment_success&MerchantReceipt=&Comment=&CommentTip=&Hash=74eb5fb668fdd21f765c7bbc2847e020&PayerData=&Email=" width="100%" height="550" frameborder="0"></iframe>
+        <p class="info">Оплата защищена. Никакие данные карты не хранятся на сайте.</p>
+    </div>
+</body>
+</html>
+    '''
+
+@app.route('/payment_success')
+def payment_success():
+    return '''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Оплата прошла успешно</title>
+    <meta http-equiv="refresh" content="5;url=/">
+    <style>
+        body { font-family: Arial; text-align: center; padding: 50px; background: #0f0c29; color: white; }
+        h1 { color: #22c55e; }
+    </style>
+</head>
+<body>
+    <h1>✅ Спасибо за оплату!</h1>
+    <p>Ваша премиум-подписка активирована.</p>
+    <p>Через 5 секунд вы вернётесь на главную страницу.</p>
+    <a href="/" style="color: #a855f7;">Вернуться сейчас</a>
+</body>
+</html>
+    '''
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
