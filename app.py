@@ -686,22 +686,38 @@ def create_payment():
 
 @app.route('/payment_success')
 def payment_success():
+    """Страница успешной оплаты — автоматически активирует премиум"""
+    user_id = get_user_id()
+    add_premium(user_id, 30)
+    logger.info(f"Премиум автоматически активирован для {user_id} после оплаты")
+    
     return '''
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <title>Оплата прошла успешно</title>
-    <meta http-equiv="refresh" content="5;url=/">
+    <meta http-equiv="refresh" content="3;url=/">
     <style>
         body { font-family: Arial; text-align: center; padding: 50px; background: #0f0c29; color: white; }
         h1 { color: #22c55e; }
+        .loader {
+            margin: 20px auto;
+            width: 40px;
+            height: 40px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #22c55e;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
+    <div class="loader"></div>
     <h1>✅ Спасибо за оплату!</h1>
     <p>Ваша премиум-подписка активирована.</p>
-    <p>Через 5 секунд вы вернётесь на главную страницу.</p>
+    <p>Через 3 секунды вы вернётесь на главную страницу.</p>
     <a href="/" style="color: #a855f7;">Вернуться сейчас</a>
 </body>
 </html>
