@@ -485,27 +485,40 @@ def api_stats():
     total_downloads = sum(sum(daily.values()) for daily in DOWNLOAD_STATS.values())
     return jsonify({'total_users': total_users, 'premium_users': premium_users, 'total_downloads': total_downloads, 'active_sessions': len(USER_SESSIONS)})
 
-@app.route('/requisites')
-def requisites():
-    return '''<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Реквизиты</title><style>body { font-family: Arial; padding: 40px; background: #0f0c29; color: white; }.card { background: rgba(255,255,255,0.1); padding: 30px; border-radius: 20px; max-width: 600px; margin: auto; }h1 { color: #a855f7; }</style></head><body><div class="card"><h1>Реквизиты самозанятого</h1><p><strong>ИНН:</strong> 231408820790</p><p><strong>ФИО:</strong> Богдан</p><p><strong>Статус:</strong> Самозанятый</p><p><strong>Налог:</strong> 4% от доходов</p></div></body></html>'''
-
 @app.route('/create_payment')
 def create_payment():
     user_id = get_user_id()
-    return f'''<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Оплата подписки</title><style>body {{ font-family: Arial; padding: 40px; background: #0f0c29; color: white; text-align: center; }}.container {{ max-width: 500px; margin: auto; background: rgba(255,255,255,0.1); padding: 30px; border-radius: 20px; }}form {{ display: flex; flex-direction: column; gap: 15px; }}input, button {{ padding: 12px; border-radius: 8px; border: none; font-size: 16px; }}button {{ background: #f59e0b; color: #333; font-weight: bold; cursor: pointer; }}</style></head><body><div class="container"><h1>💎 Оформление Premium</h1><p>Стоимость подписки: <strong>50 ₽ / месяц</strong></p><form action="https://merchant.intellectmoney.ru/ru/payment/" method="POST"><input type="hidden" name="eshopId" value="472541"><input type="hidden"name="paymentAmount" value="50"><input type="hidden" name="paymentCurrency" value="RUB"><input type="hidden" name="paymentDesc" value="Premium подписка на 30 дней"><input type="hidden" name="successUrl" value="https://video-downloader-r3y6.onrender.com/payment_success"><input type="hidden" name="failUrl" value="https://video-downloader-r3y6.onrender.com/create_payment"><input type="hidden" name="user_id" value="{user_id}"><button type="submit">Перейти к оплате 50 ₽</button></form><p class="info" style="margin-top: 20px; font-size: 14px;">Оплата защищена. Данные карты не хранятся на сайте.</p></div></body></html>'''
-
-@app.route('/payment_success', methods=['GET', 'POST'])
-def payment_success():
-    if request.method == 'POST':
-        data = request.form
-        logger.info(f"Получено уведомление: {data}")
-        if data.get('paymentStatus') == '5':
-            user_id = data.get('user_id')
-            if user_id:
-                add_premium(user_id, 30)
-                logger.info(f"✅ Премиум активирован для {user_id} через уведомление")
-        return 'OK', 200
-    return '''<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Страница оплаты</title><meta http-equiv="refresh" content="2;url=/"><style>body { font-family: Arial; text-align: center; padding: 50px; background: #0f0c29; color: white; }.loader { margin: 20px auto; width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #22c55e; border-radius: 50%; animation: spin 1s linear infinite; }@keyframes spin { 100% { transform: rotate(360deg); } }</style></head><body><div class="loader"></div><h1>🔄 Перенаправление...</h1><p>Через секунду вы вернётесь на главную страницу.</p><a href="/" style="color: #a855f7;">Вернуться сейчас</a></body></html>'''
-
+    return f'''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Оплата подписки</title>
+    <style>
+        body {{ font-family: Arial; padding: 40px; background: #0f0c29; color: white; text-align: center; }}
+        .container {{ max-width: 400px; margin: auto; background: rgba(255,255,255,0.1); padding: 30px; border-radius: 20px; }}
+        button {{ background: #f59e0b; color: #333; padding: 15px 30px; border: none; border-radius: 30px; font-size: 18px; font-weight: bold; cursor: pointer; }}
+        a {{ color: #a855f7; text-decoration: none; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>💎 Premium подписка</h1>
+        <p>Стоимость: <strong>50 ₽ / месяц</strong></p>
+        <form action="https://merchant.intellectmoney.ru/ru/payment/" method="POST">
+            <input type="hidden" name="eshopId" value="472541">
+            <input type="hidden" name="paymentAmount" value="50">
+            <input type="hidden" name="paymentCurrency" value="RUB">
+            <input type="hidden" name="paymentDesc" value="Premium подписка на 30 дней">
+            <input type="hidden" name="successUrl" value="https://video-downloader-r3y6.onrender.com/payment_success">
+            <input type="hidden" name="failUrl" value="https://video-downloader-r3y6.onrender.com/create_payment">
+            <input type="hidden" name="user_id" value="{user_id}">
+            <button type="submit">Перейти к оплате 50 ₽</button>
+        </form>
+        <p style="margin-top: 20px;"><a href="/">← Вернуться на главную</a></p>
+    </div>
+</body>
+</html>
+    '''
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
