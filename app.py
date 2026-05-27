@@ -23,7 +23,7 @@ app.secret_key = os.environ.get('SECRET_KEY', 'super-secret-key-2024-change-me')
 
 # =========== НАСТРОЙКИ ЮKASSA (ТЕСТОВЫЙ РЕЖИМ) ===========
 YOOKASSA_SHOP_ID = "1369767"
-YOOKASSA_SECRET_KEY = "test_bnUzopYIE4j-h9PiqeM2I0D16sHjo9C2CBBwVCJyJf4"
+YOOKASSA_SECRET_KEY = "test_92d73ZaVYlLk9i1BvEwS6p5tflhwj7PSqiutGHHtosY"
 
 Configuration.configure(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY)
 
