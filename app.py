@@ -934,6 +934,28 @@ def yookassa_webhook():
         logger.error(f"Ошибка webhook: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/force-premium')
+def force_premium():
+    user_id = request.cookies.get('videoSaveUserId')
+    if not user_id:
+        user_id = str(uuid.uuid4())
+    
+    add_premium(user_id, 30)
+    return f'''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Премиум активирован</title>
+        <meta http-equiv="refresh" content="2;url=/">
+    </head>
+    <body>
+        <h1>✅ Премиум активирован для {user_id}</h1>
+        <p>Перенаправление на главную...</p>
+    </body>
+    </html>
+    '''
+
 @app.route('/requisites')
 def requisites_redirect():
     return redirect(url_for('index'))
