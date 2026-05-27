@@ -42,7 +42,6 @@ FILE_RETENTION_TIME = 1800
 SECRET_REQUISITES_KEY = "Bogdan2025Secure"
 
 def load_premium_users():
-    """Загружает премиум-пользователей из файла"""
     if os.path.exists(PREMIUM_FILE):
         try:
             with open(PREMIUM_FILE, 'r', encoding='utf-8') as f:
@@ -60,7 +59,6 @@ def load_premium_users():
     return {}
 
 def save_premium_users(premium_users):
-    """Сохраняет премиум-пользователей в файл"""
     try:
         with open(PREMIUM_FILE, 'w', encoding='utf-8') as f:
             json.dump(premium_users, f, ensure_ascii=False, indent=2)
@@ -69,7 +67,6 @@ def save_premium_users(premium_users):
         logger.error(f"Ошибка сохранения: {e}")
 
 def is_premium(user_id):
-    """Проверяет премиум статус (всегда читает из файла)"""
     premium_users = load_premium_users()
     if user_id not in premium_users:
         return False
@@ -77,7 +74,6 @@ def is_premium(user_id):
     return datetime.now() < expire_date
 
 def add_premium(user_id, days=30):
-    """Добавляет премиум подписку (с сохранением в файл)"""
     premium_users = load_premium_users()
     expire_date = datetime.now() + timedelta(days=days)
     premium_users[user_id] = {
@@ -237,10 +233,532 @@ def download_video(url, format_id='best'):
     except Exception as e:
         return None, str(e)
 
-# HTML_TEMPLATE (здесь тот же самый, не меняется)
-# ... (оставь свой HTML_TEMPLATE без изменений)
-
-HTML_TEMPLATE = """... (твой существующий HTML) ..."""
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VideoSave — Галактический загрузчик</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg-gradient: radial-gradient(ellipse at 20% 30%, #1a1a2e, #0f0f1a);
+            --text-primary: #e0e0e0;
+            --text-secondary: #a0a0c0;
+            --card-bg: rgba(20, 20, 40, 0.55);
+            --card-border: rgba(168, 85, 247, 0.25);
+            --card-border-hover: rgba(168, 85, 247, 0.5);
+            --input-bg: rgba(0, 0, 0, 0.4);
+            --status-bg: rgba(0, 0, 0, 0.3);
+            --premium-card-bg: rgba(30, 30, 50, 0.5);
+            --premium-card-border: rgba(245, 158, 11, 0.3);
+            --footer-border: rgba(255, 255, 255, 0.1);
+            --alert-error-bg: rgba(239, 68, 68, 0.15);
+            --alert-error-border: rgba(239, 68, 68, 0.4);
+            --alert-success-bg: rgba(34, 197, 94, 0.15);
+            --alert-success-border: rgba(34, 197, 94, 0.4);
+            --format-card-bg: rgba(30, 30, 50, 0.6);
+        }
+        body.light {
+            --bg-gradient: radial-gradient(ellipse at 20% 30%, #e0e0e0, #c0c0d0);
+            --text-primary: #1e293b;
+            --text-secondary: #475569;
+            --card-bg: rgba(255, 255, 255, 0.7);
+            --card-border: rgba(168, 85, 247, 0.3);
+            --card-border-hover: rgba(168, 85, 247, 0.6);
+            --input-bg: rgba(255, 255, 255, 0.8);
+            --status-bg: rgba(255, 255, 255, 0.4);
+            --premium-card-bg: rgba(255, 255, 255, 0.5);
+            --premium-card-border: rgba(245, 158, 11, 0.4);
+            --footer-border: rgba(0, 0, 0, 0.1);
+            --alert-error-bg: rgba(239, 68, 68, 0.1);
+            --alert-error-border: rgba(239, 68, 68, 0.3);
+            --alert-success-bg: rgba(34, 197, 94, 0.1);
+            --alert-success-border: rgba(34, 197, 94, 0.3);
+            --format-card-bg: rgba(255, 255, 255, 0.7);
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-gradient);
+            min-height: 100vh;
+            color: var(--text-primary);
+            overflow-x: hidden;
+            transition: background 0.4s ease, color 0.3s ease;
+            cursor: default;
+        }
+        #spheresContainer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: auto;
+            z-index: 5;
+            overflow: hidden;
+        }
+        .pop-sphere {
+            position: absolute;
+            border-radius: 50%;
+            cursor: pointer;
+            transition: transform 0.05s linear;
+            animation: floatSphere 8s ease-in-out infinite;
+            box-shadow: 0 0 15px rgba(168, 85, 247, 0.5);
+            z-index: 5;
+            pointer-events: auto;
+        }
+        @keyframes floatSphere {
+            0%, 100% { transform: translateY(0) translateX(0); }
+            25% { transform: translateY(-20px) translateX(15px); }
+            50% { transform: translateY(10px) translateX(-10px); }
+            75% { transform: translateY(-10px) translateX(20px); }
+        }
+        @keyframes popExplosion {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.8); opacity: 0.8; background: radial-gradient(circle, #ffaa00, #ff6600); }
+            100% { transform: scale(0); opacity: 0; }
+        }
+        .pop-animation { animation: popExplosion 0.3s ease-out forwards; }
+        .score-board {
+            position: fixed;
+            top: 20px;
+            right: 80px;
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--card-border);
+            border-radius: 50px;
+            padding: 8px 18px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.3s;
+        }
+        .achievement {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) scale(0);
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            color: white;
+            font-size: 4rem;
+            font-weight: bold;
+            padding: 20px 40px;
+            border-radius: 80px;
+            z-index: 200;
+            white-space: nowrap;
+            box-shadow: 0 0 50px rgba(245, 158, 11, 0.8);
+            text-shadow: 0 0 10px rgba(0,0,0,0.3);
+            animation: achievementPop 0.5s ease-out forwards;
+            pointer-events: none;
+        }
+        @keyframes achievementPop {
+            0% { transform: translate(-50%, -50%) scale(0); opacity: 0; }
+            50% { transform: translate(-50%, -50%) scale(1.2); opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+        }
+        .achievement-fade { animation: achievementFade 2s ease-in forwards; }
+        @keyframes achievementFade {
+            0% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+            80% { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+            100% { opacity: 0; transform: translate(-50%, -50%) scale(1.3); display: none; }
+        }
+        .confetti {
+            position: fixed;
+            width: 10px;
+            height: 10px;
+            background: #f59e0b;
+            position: absolute;
+            z-index: 150;
+            animation: confettiFall 3s ease-out forwards;
+        }
+        @keyframes confettiFall {
+            0% { transform: translateY(-100vh) rotate(0deg); opacity: 1; }
+            100% { transform: translateY(100vh) rotate(360deg); opacity: 0; }
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            position: relative;
+            z-index: 20;
+        }
+        .theme-toggle {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--card-border);
+            border-radius: 50px;
+            width: 50px;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 1.6rem;
+            z-index: 100;
+            transition: all 0.3s ease;
+        }
+        .glass-card {
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            border-radius: 48px;
+            padding: 40px;
+            border: 1px solid var(--card-border);
+            box-shadow: 0 25px 45px -12px rgba(0, 0, 0, 0.4), 0 0 20px rgba(168, 85, 247, 0.05);
+            transition: all 0.4s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+            z-index: 20;
+            position: relative;
+        }
+        .glass-card:hover {
+            border-color: var(--card-border-hover);
+            transform: translateY(-4px);
+        }
+        .logo {
+            text-align: center;
+            font-size: 4.5rem;
+            margin-bottom: 10px;
+            animation: floatLogo 3s ease-in-out infinite;
+        }
+        @keyframes floatLogo {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-12px); }
+        }
+        h1 {
+            font-size: 3rem;
+            text-align: center;
+            background: linear-gradient(135deg, var(--text-primary), #a855f7, #7c3aed);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            text-align: center;
+            color: var(--text-secondary);
+            margin-bottom: 30px;
+        }
+        .platforms {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 12px;
+            margin-bottom: 30px;
+        }
+        .platform-badge {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(4px);
+            padding: 6px 18px;
+            border-radius: 40px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            border: 1px solid var(--card-border);
+            transition: all 0.3s;
+            cursor: default;
+        }
+        .status-card {
+            background: var(--status-bg);
+            border-radius: 24px;
+            padding: 16px 24px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+            border: 1px solid var(--card-border);
+        }
+        .premium-badge {
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            padding: 8px 22px;
+            border-radius: 40px;
+            font-weight: bold;
+            color: white;
+            animation: glow 2s infinite;
+        }
+        .free-badge {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 8px 22px;
+            border-radius: 40px;
+            color: var(--text-secondary);
+        }
+        .url-input {
+            width: 100%;
+            padding: 16px 24px;
+            background: var(--input-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 60px;
+            font-size: 1rem;
+            color: var(--text-primary);
+            transition: all 0.3s;
+            margin-bottom: 20px;
+        }
+        .btn {
+            width: 100%;
+            padding: 16px;
+            border: none;
+            border-radius: 60px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: linear-gradient(135deg, #a855f7, #7c3aed);
+            color: white;
+            position: relative;
+            overflow: hidden;
+        }
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+            transition: left 0.5s;
+        }
+        .btn:hover::before { left: 100%; }
+        .btn-premium {
+            display: inline-block;
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            border-radius: 60px;
+            padding: 12px 32px;
+            color: white;
+            text-decoration: none;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+        .btn-premium:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px -5px rgba(245, 158, 11, 0.4);
+        }
+        .formats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 12px;
+            margin: 20px 0;
+        }
+        .format-card {
+            background: var(--format-card-bg);
+            backdrop-filter: blur(4px);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            padding: 14px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+        }
+        .format-card.selected {
+            background: rgba(168, 85, 247, 0.2);
+            border-color: #a855f7;
+            box-shadow: 0 0 15px rgba(168, 85, 247, 0.2);
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid var(--footer-border);
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+        @media (max-width: 600px) {
+            .glass-card { padding: 24px; }
+            h1 { font-size: 2rem; }
+            .score-board { top: 10px; right: 60px; font-size: 1rem; }
+            .achievement { font-size: 2rem; padding: 15px 30px; }
+        }
+    </style>
+</head>
+<body>
+    <div id="spheresContainer"></div>
+    <div class="score-board"><span>💥</span><span id="scoreValue">0</span></div>
+    <div class="theme-toggle" id="themeToggle">🌙</div>
+    <div class="container">
+        <div class="glass-card animate">
+            <div class="logo">🎬</div>
+            <h1>VideoSave</h1>
+            <p class="subtitle">Галактический загрузчик видео</p>
+            <div class="platforms">
+                <span class="platform-badge">YouTube</span>
+                <span class="platform-badge">RuTube</span>
+                <span class="platform-badge">VK</span>
+                <span class="platform-badge">Twitch</span>
+                <span class="platform-badge">TikTok</span>
+            </div>
+            <div class="status-card">
+                <strong>📊 Статус:</strong>
+                <span id="premiumStatus">🔍 Загрузка...</span>
+            </div>
+            <div id="alertContainer"></div>
+            <input type="text" id="videoUrl" class="url-input" placeholder="Вставьте ссылку на видео...">
+            <button class="btn" onclick="getVideoInfo()">🎯 Получить информацию</button>
+            <div class="loader" id="loader" style="display:none; text-align:center; padding:20px;"><div class="spinner" style="width:40px;height:40px;border:3px solid rgba(168,85,247,0.2);border-top-color:#a855f7;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto;"></div><p>Обработка...</p></div>
+            <div class="video-info" id="videoInfo" style="display:none; margin-top:30px;">
+                <img id="videoThumbnail" style="width:100%; border-radius:24px;">
+                <h3 id="videoTitle"></h3>
+                <div id="videoDuration" style="color:var(--text-secondary); margin:10px 0;"></div>
+                <div class="formats-grid" id="formatsList"></div>
+                <button class="btn" id="downloadBtn" onclick="downloadVideo()">⬇️ Скачать видео</button>
+            </div>
+            <div class="premium-card" id="premiumCard" style="margin-top:30px; text-align:center; display:none;">
+                <div style="font-size:2rem;">✨</div>
+                <h3>Премиум возможности</h3>
+                <div style="display:flex; justify-content:center; gap:30px; margin:20px 0; flex-wrap:wrap;">
+                    <div><div style="font-size:2rem;">🚀</div><div>Безлимит</div></div>
+                    <div><div style="font-size:2rem;">🎯</div><div>Любое качество</div></div>
+                    <div><div style="font-size:2rem;">⚡</div><div>Мгновенно</div></div>
+                </div>
+                <a href="#" id="payButton" class="btn-premium">💳 Оплатить Premium 50₽ через ЮKassa</a>
+            </div>
+            <div class="footer">
+                <p>🎥 VideoSave — космическая скорость скачивания</p>
+                <p><a href="/return-policy">Политика возврата</a> | <a href="/requisites/secret">Реквизиты</a></p>
+            </div>
+        </div>
+    </div>
+    <style>
+        .loader .spinner { animation: spin 1s linear infinite; }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+    </style>
+    <script>
+        let userId = localStorage.getItem('videoSaveUserId');
+        if (!userId) {
+            userId = crypto.randomUUID ? crypto.randomUUID() : 'user_' + Date.now() + '_' + Math.random().toString(36);
+            localStorage.setItem('videoSaveUserId', userId);
+        }
+        function getHeaders() {
+            return { 'Content-Type': 'application/json', 'X-User-Id': userId };
+        }
+        async function checkPremiumStatus() {
+            try {
+                const response = await fetch('/api/premium-status', { headers: getHeaders() });
+                const data = await response.json();
+                const statusDiv = document.getElementById('premiumStatus');
+                const premiumCard = document.getElementById('premiumCard');
+                const payButton = document.getElementById('payButton');
+                if (data.is_premium) {
+                    statusDiv.innerHTML = '<span class="premium-badge">⭐ PREMIUM до ' + data.expire_date + '</span>';
+                    if (premiumCard) premiumCard.style.display = 'none';
+                } else {
+                    statusDiv.innerHTML = '<span class="free-badge">🔓 Бесплатный (осталось ' + data.downloads_left + ' из 3 скачиваний на этой неделе)</span>';
+                    if (premiumCard) premiumCard.style.display = 'block';
+                    if (payButton) payButton.href = '/create_yookassa_payment';
+                }
+            } catch(e) { console.error(e); }
+        }
+        let score = 0, spheres = [], achievementShown = false;
+        const spheresContainer = document.getElementById('spheresContainer');
+        const scoreElement = document.getElementById('scoreValue');
+        function createSphere() {
+            const sphere = document.createElement('div');
+            sphere.classList.add('pop-sphere');
+            const size = Math.random() * 40 + 30;
+            sphere.style.width = size + 'px';
+            sphere.style.height = size + 'px';
+            sphere.style.left = Math.random() * (window.innerWidth - 100) + 'px';
+            sphere.style.top = Math.random() * (window.innerHeight - 100) + 'px';
+            sphere.style.background = `radial-gradient(circle at 30% 30%, rgba(168,85,247,0.85), rgba(124,58,237,0.65))`;
+            sphere.style.animationDuration = (Math.random() * 5 + 5) + 's';
+            sphere.addEventListener('click', (e) => { e.stopPropagation(); popSphere(sphere); });
+            spheresContainer.appendChild(sphere);
+            spheres.push(sphere);
+            setTimeout(() => { if(sphere.parentNode) { sphere.remove(); spheres = spheres.filter(s => s !== sphere); } }, 15000);
+        }
+        function popSphere(sphere) {
+            sphere.classList.add('pop-animation');
+            score++;
+            scoreElement.textContent = score;
+            if(score === 100 && !achievementShown) {
+                achievementShown = true;
+                const achievementDiv = document.createElement('div');
+                achievementDiv.className = 'achievement';
+                achievementDiv.textContent = 'ТЫКУН!';
+                document.body.appendChild(achievementDiv);
+                for(let i=0;i<100;i++) {
+                    const conf = document.createElement('div');
+                    conf.className = 'confetti';
+                    conf.style.left = Math.random() * window.innerWidth + 'px';
+                    conf.style.backgroundColor = `hsl(${Math.random() * 360}, 100%, 50%)`;
+                    conf.style.width = Math.random() * 8 + 4 + 'px';
+                    conf.style.animationDuration = Math.random() * 2 + 2 + 's';
+                    document.body.appendChild(conf);
+                    setTimeout(() => conf.remove(), 3000);
+                }
+                setTimeout(() => achievementDiv.classList.add('achievement-fade'), 1500);
+                setTimeout(() => achievementDiv.remove(), 3500);
+            }
+            setTimeout(() => { if(sphere.parentNode) sphere.remove(); spheres = spheres.filter(s => s !== sphere); }, 300);
+        }
+        setInterval(() => { if(spheres.length < 30) createSphere(); }, 2000);
+        for(let i=0;i<15;i++) setTimeout(() => createSphere(), i*300);
+        const themeToggle = document.getElementById('themeToggle');
+        const body = document.body;
+        function setTheme(theme) {
+            if(theme === 'light') { body.classList.add('light'); themeToggle.innerHTML = '🌙'; localStorage.setItem('theme', 'light'); }
+            else { body.classList.remove('light'); themeToggle.innerHTML = '☀️'; localStorage.setItem('theme', 'dark'); }
+        }
+        (localStorage.getItem('theme') === 'light') ? setTheme('light') : setTheme('dark');
+        themeToggle.addEventListener('click', () => body.classList.contains('light') ? setTheme('dark') : setTheme('light'));
+        let selectedFormat = null, currentVideoUrl = null;
+        function showAlert(msg, type) {
+            const container = document.getElementById('alertContainer');
+            container.innerHTML = `<div class="alert alert-${type}" style="padding:12px; border-radius:20px; margin-bottom:20px; background:${type==='error'?'rgba(239,68,68,0.15)':'rgba(34,197,94,0.15)'}">${msg}</div>`;
+            setTimeout(() => container.innerHTML = '', 5000);
+        }
+        async function getVideoInfo() {
+            const url = document.getElementById('videoUrl').value.trim();
+            if(!url) { showAlert('Введите ссылку', 'error'); return; }
+            currentVideoUrl = url;
+            document.getElementById('loader').style.display = 'block';
+            document.getElementById('videoInfo').style.display = 'none';
+            try {
+                const response = await fetch('/api/video-info', { method: 'POST', headers: getHeaders(), body: JSON.stringify({ url }) });
+                const data = await response.json();
+                document.getElementById('loader').style.display = 'none';
+                if(data.error) { showAlert(data.error, 'error'); return; }
+                document.getElementById('videoThumbnail').src = data.thumbnail || '';
+                document.getElementById('videoTitle').innerText = data.title;
+                if(data.duration) document.getElementById('videoDuration').innerHTML = `⏱️ Длительность: ${Math.floor(data.duration/60)}:${(data.duration%60).toString().padStart(2,'0')}`;
+                const list = document.getElementById('formatsList');
+                list.innerHTML = '';
+                data.formats.forEach(f => {
+                    const div = document.createElement('div');
+                    div.className = 'format-card';
+                    div.innerHTML = `<strong>${f.resolution}</strong><br><small>${f.ext.toUpperCase()} · ${f.filesize_mb} МБ</small>`;
+                    div.onclick = () => { selectedFormat = f.format_id; document.querySelectorAll('.format-card').forEach(c => c.classList.remove('selected')); div.classList.add('selected'); };
+                    list.appendChild(div);
+                });
+                if(data.formats.length) selectedFormat = data.formats[0].format_id;
+                document.getElementById('videoInfo').style.display = 'block';
+            } catch(e) { document.getElementById('loader').style.display = 'none'; showAlert('Ошибка сервера', 'error'); }
+        }
+        async function downloadVideo() {
+            if(!selectedFormat || !currentVideoUrl) { showAlert('Выберите качество', 'error'); return; }
+            try {
+                const response = await fetch('/api/download', { method: 'POST', headers: getHeaders(), body: JSON.stringify({ url: currentVideoUrl, format_id: selectedFormat }) });
+                if(!response.ok) { const data = await response.json(); throw new Error(data.error || 'Ошибка'); }
+                const blob = await response.blob();
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = 'video.mp4';
+                a.click();
+                URL.revokeObjectURL(a.href);
+                showAlert('✅ Скачивание началось!', 'success');
+                checkPremiumStatus();
+            } catch(e) { showAlert('Ошибка: '+e.message, 'error'); }
+        }
+        document.getElementById('videoUrl').addEventListener('keypress', e => { if(e.key === 'Enter') getVideoInfo(); });
+        checkPremiumStatus();
+    </script>
+</body>
+</html>
+"""
 
 @app.route('/')
 def index():
