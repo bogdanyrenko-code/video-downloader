@@ -6,7 +6,7 @@ import re
 import json
 import logging
 from datetime import datetime, timedelta
-from flask import Flask, request, send_file, render_template_string, session, redirect, url_for, jsonify, after_this_request
+from flask import Flask, request, send_file, render_template_string, session, redirect, url_for, jsonify, after_this_request, make_response
 import yt_dlp
 import requests
 from threading import Thread
@@ -98,6 +98,10 @@ def get_user_id():
     user_id = str(uuid.uuid4())
     session['user_id'] = user_id
     return user_id
+
+def set_user_id_cookie(response, user_id):
+    response.set_cookie('videoSaveUserId', user_id, max_age=365*24*60*60, httponly=False)
+    return response
 
 def is_premium(user_id):
     if user_id not in PREMIUM_USERS:
@@ -243,7 +247,6 @@ HTML_TEMPLATE = """
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-
         :root {
             --bg-gradient: radial-gradient(ellipse at 20% 30%, #1a1a2e, #0f0f1a);
             --text-primary: #e0e0e0;
@@ -262,7 +265,6 @@ HTML_TEMPLATE = """
             --alert-success-border: rgba(34, 197, 94, 0.4);
             --format-card-bg: rgba(30, 30, 50, 0.6);
         }
-
         body.light {
             --bg-gradient: radial-gradient(ellipse at 20% 30%, #e0e0e0, #c0c0d0);
             --text-primary: #1e293b;
@@ -281,7 +283,6 @@ HTML_TEMPLATE = """
             --alert-success-border: rgba(34, 197, 94, 0.3);
             --format-card-bg: rgba(255, 255, 255, 0.7);
         }
-
         body {
             font-family: 'Inter', sans-serif;
             background: var(--bg-gradient);
@@ -291,7 +292,6 @@ HTML_TEMPLATE = """
             transition: background 0.4s ease, color 0.3s ease;
             cursor: default;
         }
-
         #spheresContainer {
             position: fixed;
             top: 0;
@@ -302,7 +302,6 @@ HTML_TEMPLATE = """
             z-index: 5;
             overflow: hidden;
         }
-
         .pop-sphere {
             position: absolute;
             border-radius: 50%;
@@ -313,24 +312,18 @@ HTML_TEMPLATE = """
             z-index: 5;
             pointer-events: auto;
         }
-
         @keyframes floatSphere {
             0%, 100% { transform: translateY(0) translateX(0); }
             25% { transform: translateY(-20px) translateX(15px); }
             50% { transform: translateY(10px) translateX(-10px); }
             75% { transform: translateY(-10px) translateX(20px); }
         }
-
         @keyframes popExplosion {
             0% { transform: scale(1); opacity: 1; }
             50% { transform: scale(1.8); opacity: 0.8; background: radial-gradient(circle, #ffaa00, #ff6600); }
             100% { transform: scale(0); opacity: 0; }
         }
-
-        .pop-animation {
-            animation: popExplosion 0.3s ease-out forwards;
-        }
-
+        .pop-animation { animation: popExplosion 0.3s ease-out forwards; }
         .score-board {
             position: fixed;
             top: 20px;
@@ -348,7 +341,6 @@ HTML_TEMPLATE = """
             gap: 8px;
             transition: all 0.3s;
         }
-
         .achievement {
             position: fixed;
             top: 50%;
@@ -367,23 +359,17 @@ HTML_TEMPLATE = """
             animation: achievementPop 0.5s ease-out forwards;
             pointer-events: none;
         }
-
         @keyframes achievementPop {
             0% { transform: translate(-50%, -50%) scale(0); opacity: 0; }
             50% { transform: translate(-50%, -50%) scale(1.2); opacity: 1; }
             100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
         }
-
-        .achievement-fade {
-            animation: achievementFade 2s ease-in forwards;
-        }
-
+        .achievement-fade { animation: achievementFade 2s ease-in forwards; }
         @keyframes achievementFade {
             0% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
             80% { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
             100% { opacity: 0; transform: translate(-50%, -50%) scale(1.3); display: none; }
         }
-
         .confetti {
             position: fixed;
             width: 10px;
@@ -393,12 +379,10 @@ HTML_TEMPLATE = """
             z-index: 150;
             animation: confettiFall 3s ease-out forwards;
         }
-
         @keyframes confettiFall {
             0% { transform: translateY(-100vh) rotate(0deg); opacity: 1; }
             100% { transform: translateY(100vh) rotate(360deg); opacity: 0; }
         }
-
         .container {
             max-width: 1000px;
             margin: 0 auto;
@@ -406,7 +390,6 @@ HTML_TEMPLATE = """
             position: relative;
             z-index: 20;
         }
-
         .theme-toggle {
             position: fixed;
             top: 20px;
@@ -425,7 +408,6 @@ HTML_TEMPLATE = """
             z-index: 100;
             transition: all 0.3s ease;
         }
-
         .glass-card {
             background: var(--card-bg);
             backdrop-filter: blur(16px);
@@ -437,24 +419,20 @@ HTML_TEMPLATE = """
             z-index: 20;
             position: relative;
         }
-
         .glass-card:hover {
             border-color: var(--card-border-hover);
             transform: translateY(-4px);
         }
-
         .logo {
             text-align: center;
             font-size: 4.5rem;
             margin-bottom: 10px;
             animation: floatLogo 3s ease-in-out infinite;
         }
-
         @keyframes floatLogo {
             0%, 100% { transform: translateY(0); }
             50% { transform: translateY(-12px); }
         }
-
         h1 {
             font-size: 3rem;
             text-align: center;
@@ -464,13 +442,11 @@ HTML_TEMPLATE = """
             color: transparent;
             margin-bottom: 10px;
         }
-
         .subtitle {
             text-align: center;
             color: var(--text-secondary);
             margin-bottom: 30px;
         }
-
         .platforms {
             display: flex;
             flex-wrap: wrap;
@@ -478,7 +454,6 @@ HTML_TEMPLATE = """
             gap: 12px;
             margin-bottom: 30px;
         }
-
         .platform-badge {
             background: rgba(255, 255, 255, 0.05);
             backdrop-filter: blur(4px);
@@ -491,7 +466,6 @@ HTML_TEMPLATE = """
             transition: all 0.3s;
             cursor: default;
         }
-
         .status-card {
             background: var(--status-bg);
             border-radius: 24px;
@@ -504,7 +478,6 @@ HTML_TEMPLATE = """
             gap: 15px;
             border: 1px solid var(--card-border);
         }
-
         .premium-badge {
             background: linear-gradient(135deg, #f59e0b, #d97706);
             padding: 8px 22px;
@@ -513,14 +486,12 @@ HTML_TEMPLATE = """
             color: white;
             animation: glow 2s infinite;
         }
-
         .free-badge {
             background: rgba(255, 255, 255, 0.1);
             padding: 8px 22px;
             border-radius: 40px;
             color: var(--text-secondary);
         }
-
         .url-input {
             width: 100%;
             padding: 16px 24px;
@@ -532,7 +503,6 @@ HTML_TEMPLATE = """
             transition: all 0.3s;
             margin-bottom: 20px;
         }
-
         .btn {
             width: 100%;
             padding: 16px;
@@ -547,7 +517,6 @@ HTML_TEMPLATE = """
             position: relative;
             overflow: hidden;
         }
-
         .btn::before {
             content: '';
             position: absolute;
@@ -558,11 +527,7 @@ HTML_TEMPLATE = """
             background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
             transition: left 0.5s;
         }
-
-        .btn:hover::before {
-            left: 100%;
-        }
-
+        .btn:hover::before { left: 100%; }
         .btn-premium {
             display: inline-block;
             background: linear-gradient(135deg, #f59e0b, #d97706);
@@ -573,19 +538,16 @@ HTML_TEMPLATE = """
             font-weight: bold;
             transition: all 0.3s;
         }
-
         .btn-premium:hover {
             transform: translateY(-2px);
             box-shadow: 0 10px 25px -5px rgba(245, 158, 11, 0.4);
         }
-
         .formats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
             gap: 12px;
             margin: 20px 0;
         }
-
         .format-card {
             background: var(--format-card-bg);
             backdrop-filter: blur(4px);
@@ -596,13 +558,11 @@ HTML_TEMPLATE = """
             cursor: pointer;
             transition: all 0.3s cubic-bezier(0.2, 0.9, 0.4, 1.1);
         }
-
         .format-card.selected {
             background: rgba(168, 85, 247, 0.2);
             border-color: #a855f7;
             box-shadow: 0 0 15px rgba(168, 85, 247, 0.2);
         }
-
         .footer {
             text-align: center;
             margin-top: 30px;
@@ -611,7 +571,6 @@ HTML_TEMPLATE = """
             font-size: 0.8rem;
             color: var(--text-secondary);
         }
-
         @media (max-width: 600px) {
             .glass-card { padding: 24px; }
             h1 { font-size: 2rem; }
@@ -641,7 +600,7 @@ HTML_TEMPLATE = """
                 <span id="premiumStatus">🔍 Загрузка...</span>
             </div>
             <div id="alertContainer"></div>
-            <input type="text" id="videoUrl" class="url-input" placeholder="Вставьте ссылку на видео..." autocomplete="off">
+            <input type="text" id="videoUrl" class="url-input" placeholder="Вставьте ссылку на видео...">
             <button class="btn" onclick="getVideoInfo()">🎯 Получить информацию</button>
             <div class="loader" id="loader" style="display:none; text-align:center; padding:20px;"><div class="spinner" style="width:40px;height:40px;border:3px solid rgba(168,85,247,0.2);border-top-color:#a855f7;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto;"></div><p>Обработка...</p></div>
             <div class="video-info" id="videoInfo" style="display:none; margin-top:30px;">
@@ -677,14 +636,9 @@ HTML_TEMPLATE = """
             userId = crypto.randomUUID ? crypto.randomUUID() : 'user_' + Date.now() + '_' + Math.random().toString(36);
             localStorage.setItem('videoSaveUserId', userId);
         }
-        
         function getHeaders() {
-            return {
-                'Content-Type': 'application/json',
-                'X-User-Id': userId
-            };
+            return { 'Content-Type': 'application/json', 'X-User-Id': userId };
         }
-        
         async function checkPremiumStatus() {
             try {
                 const response = await fetch('/api/premium-status', { headers: getHeaders() });
@@ -692,7 +646,6 @@ HTML_TEMPLATE = """
                 const statusDiv = document.getElementById('premiumStatus');
                 const premiumCard = document.getElementById('premiumCard');
                 const payButton = document.getElementById('payButton');
-                
                 if (data.is_premium) {
                     statusDiv.innerHTML = '<span class="premium-badge">⭐ PREMIUM до ' + data.expire_date + '</span>';
                     if (premiumCard) premiumCard.style.display = 'none';
@@ -701,15 +654,11 @@ HTML_TEMPLATE = """
                     if (premiumCard) premiumCard.style.display = 'block';
                     if (payButton) payButton.href = '/create_yookassa_payment';
                 }
-            } catch(e) {
-                console.error('Ошибка проверки статуса:', e);
-            }
+            } catch(e) { console.error(e); }
         }
-        
         let score = 0, spheres = [], achievementShown = false;
         const spheresContainer = document.getElementById('spheresContainer');
         const scoreElement = document.getElementById('scoreValue');
-
         function createSphere() {
             const sphere = document.createElement('div');
             sphere.classList.add('pop-sphere');
@@ -725,7 +674,6 @@ HTML_TEMPLATE = """
             spheres.push(sphere);
             setTimeout(() => { if(sphere.parentNode) { sphere.remove(); spheres = spheres.filter(s => s !== sphere); } }, 15000);
         }
-
         function popSphere(sphere) {
             sphere.classList.add('pop-animation');
             score++;
@@ -751,10 +699,8 @@ HTML_TEMPLATE = """
             }
             setTimeout(() => { if(sphere.parentNode) sphere.remove(); spheres = spheres.filter(s => s !== sphere); }, 300);
         }
-
         setInterval(() => { if(spheres.length < 30) createSphere(); }, 2000);
         for(let i=0;i<15;i++) setTimeout(() => createSphere(), i*300);
-
         const themeToggle = document.getElementById('themeToggle');
         const body = document.body;
         function setTheme(theme) {
@@ -763,14 +709,12 @@ HTML_TEMPLATE = """
         }
         (localStorage.getItem('theme') === 'light') ? setTheme('light') : setTheme('dark');
         themeToggle.addEventListener('click', () => body.classList.contains('light') ? setTheme('dark') : setTheme('light'));
-
         let selectedFormat = null, currentVideoUrl = null;
         function showAlert(msg, type) {
             const container = document.getElementById('alertContainer');
             container.innerHTML = `<div class="alert alert-${type}" style="padding:12px; border-radius:20px; margin-bottom:20px; background:${type==='error'?'rgba(239,68,68,0.15)':'rgba(34,197,94,0.15)'}">${msg}</div>`;
             setTimeout(() => container.innerHTML = '', 5000);
         }
-        
         async function getVideoInfo() {
             const url = document.getElementById('videoUrl').value.trim();
             if(!url) { showAlert('Введите ссылку', 'error'); return; }
@@ -798,7 +742,6 @@ HTML_TEMPLATE = """
                 document.getElementById('videoInfo').style.display = 'block';
             } catch(e) { document.getElementById('loader').style.display = 'none'; showAlert('Ошибка сервера', 'error'); }
         }
-        
         async function downloadVideo() {
             if(!selectedFormat || !currentVideoUrl) { showAlert('Выберите качество', 'error'); return; }
             try {
@@ -814,9 +757,7 @@ HTML_TEMPLATE = """
                 checkPremiumStatus();
             } catch(e) { showAlert('Ошибка: '+e.message, 'error'); }
         }
-        
         document.getElementById('videoUrl').addEventListener('keypress', e => { if(e.key === 'Enter') getVideoInfo(); });
-        
         checkPremiumStatus();
     </script>
 </body>
@@ -825,11 +766,13 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_TEMPLATE)
+    resp = make_response(render_template_string(HTML_TEMPLATE))
+    user_id = get_user_id()
+    return set_user_id_cookie(resp, user_id)
 
 @app.route('/api/premium-status')
 def api_premium_status():
-    user_id = request.headers.get('X-User-Id')
+    user_id = request.headers.get('X-User-Id') or request.cookies.get('videoSaveUserId')
     if not user_id:
         return jsonify({'is_premium': False, 'expire_date': None, 'downloads_left': MAX_FREE_DOWNLOADS_PER_WEEK})
     
@@ -856,7 +799,7 @@ def api_video_info():
         if err:
             return jsonify({'error': err}), 400
         
-        user_id = request.headers.get('X-User-Id')
+        user_id = request.headers.get('X-User-Id') or request.cookies.get('videoSaveUserId')
         if user_id:
             info['premium'] = is_premium(user_id)
         else:
@@ -876,7 +819,7 @@ def api_download():
         if not url:
             return jsonify({'error': 'URL не указан'}), 400
         
-        user_id = request.headers.get('X-User-Id')
+        user_id = request.headers.get('X-User-Id') or request.cookies.get('videoSaveUserId')
         if not user_id:
             user_id = str(uuid.uuid4())
         
@@ -907,7 +850,7 @@ def api_download():
 
 @app.route('/create_yookassa_payment')
 def create_yookassa_payment():
-    user_id = request.headers.get('X-User-Id')
+    user_id = request.headers.get('X-User-Id') or request.cookies.get('videoSaveUserId')
     if not user_id:
         user_id = str(uuid.uuid4())
     
@@ -931,9 +874,7 @@ def create_yookassa_payment():
 def payment_success_yookassa():
     user_id = request.args.get('user_id')
     if not user_id:
-        user_id = request.headers.get('X-User-Id')
-    if not user_id:
-        user_id = session.get('user_id')
+        user_id = request.headers.get('X-User-Id') or request.cookies.get('videoSaveUserId')
     
     if user_id:
         add_premium(user_id, 30)
