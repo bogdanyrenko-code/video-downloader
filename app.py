@@ -87,26 +87,11 @@ cleanup_thread = Thread(target=cleanup_old_files, daemon=True)
 cleanup_thread.start()
 
 def get_user_id():
-    # 1. Из параметра URL
-    user_id = request.args.get('user_id')
-    if user_id:
-        return user_id
-    
-    # 2. Из куки
     user_id = request.cookies.get('videoSaveUserId')
     if user_id:
         return user_id
-    
-    # 3. Из заголовка
-    user_id = request.headers.get('X-User-Id')
-    if user_id and user_id != 'null':
-        return user_id
-    
-    # 4. Из сессии
     if 'user_id' in session:
         return session['user_id']
-    
-    # 5. Создаём новый
     user_id = str(uuid.uuid4())
     session['user_id'] = user_id
     return user_id
@@ -785,7 +770,7 @@ def index():
 
 @app.route('/api/premium-status')
 def api_premium_status():
-    user_id = request.args.get('user_id') or request.headers.get('X-User-Id') or request.cookies.get('videoSaveUserId')
+    user_id = request.cookies.get('videoSaveUserId')
     if not user_id:
         return jsonify({'is_premium': False, 'expire_date': None, 'downloads_left': MAX_FREE_DOWNLOADS_PER_WEEK})
     
@@ -812,7 +797,7 @@ def api_video_info():
         if err:
             return jsonify({'error': err}), 400
         
-        user_id = request.args.get('user_id') or request.headers.get('X-User-Id') or request.cookies.get('videoSaveUserId')
+        user_id = request.cookies.get('videoSaveUserId')
         if user_id:
             info['premium'] = is_premium(user_id)
         else:
@@ -832,7 +817,7 @@ def api_download():
         if not url:
             return jsonify({'error': 'URL не указан'}), 400
         
-        user_id = request.args.get('user_id') or request.headers.get('X-User-Id') or request.cookies.get('videoSaveUserId')
+        user_id = request.cookies.get('videoSaveUserId')
         if not user_id:
             user_id = str(uuid.uuid4())
         
@@ -863,34 +848,40 @@ def api_download():
 
 @app.route('/create_yookassa_payment')
 def create_yookassa_payment():
-    user_id = request.args.get('user_id') or request.headers.get('X-User-Id') or request.cookies.get('videoSaveUserId')
+    user_id = request.cookies.get('videoSaveUserId')
     if not user_id:
         user_id = str(uuid.uuid4())
     
     try:
+        return_url = f"https://video-downloader-r3y6.onrender.com/payment_success_yookassa?user_id={user_id}"
+        
         payment = Payment.create({
             "amount": {"value": "50.00", "currency": "RUB"},
             "confirmation": {
                 "type": "redirect", 
-                "return_url": f"https://video-downloader-r3y6.onrender.com/payment_success_yookassa?user_id={user_id}"
+                "return_url": return_url
             },
             "capture": True,
-            "description": f"Premium подписка на 30 дней (user: {user_id})",
+            "description": "Premium подписка на 30 дней",
             "metadata": {"user_id": user_id}
         })
         return redirect(payment.confirmation.confirmation_url)
     except Exception as e:
         logger.error(f"Ошибка при создании платежа: {e}")
-        return f"Ошибка при создании платежа: {e}"
+        return f"Ошибка: {e}"
 
 @app.route('/payment_success_yookassa')
 def payment_success_yookassa():
     user_id = request.args.get('user_id')
+    
+    if not user_id:
+        user_id = request.cookies.get('videoSaveUserId')
+    
     if user_id:
         add_premium(user_id, 30)
-        logger.info(f"Премиум активирован для {user_id} через страницу успеха")
+        logger.info(f"✅ Премиум активирован для {user_id}")
     else:
-        logger.error("Не удалось получить user_id при возврате с оплаты")
+        logger.error("❌ Не удалось получить user_id")
     
     return '''
 <!DOCTYPE html>
@@ -898,7 +889,10 @@ def payment_success_yookassa():
 <head>
     <meta charset="UTF-8">
     <title>Оплата прошла успешно</title>
-    <meta http-equiv="refresh" content="3;url=/">
+    <script>
+        localStorage.setItem('premiumJustActivated', 'true');
+        window.location.href = '/';
+    </script>
     <style>
         body { font-family: Arial; text-align: center; padding: 50px; background: #0f0c29; color: white; }
         h1 { color: #22c55e; }
@@ -918,8 +912,7 @@ def payment_success_yookassa():
     <div class="loader"></div>
     <h1>✅ Оплата прошла успешно!</h1>
     <p>Ваша премиум-подписка активирована.</p>
-    <p>Через 3 секунды вы вернётесь на главную страницу.</p>
-    <a href="/" style="color: #a855f7;">Вернуться сейчас</a>
+    <p>Перенаправление...</p>
 </body>
 </html>
     '''
