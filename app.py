@@ -960,15 +960,91 @@ def force_premium():
 def requisites_redirect():
     return redirect(url_for('index'))
 
-@app.route('/requisites/secret')
+@app.route('/requisites/secret', methods=['GET', 'POST'])
 def requisites_secret():
-    key = request.args.get('key')
-    if key != SECRET_REQUISITES_KEY:
-        return "Доступ запрещён", 403
-    return '''<!DOCTYPE html>
+    # Если отправлена форма с паролем
+    if request.method == 'POST':
+        password = request.form.get('password')
+        if password == 'Bogdan2025Secure':
+            # Сохраняем в сессии, что пользователь авторизован
+            session['requisites_auth'] = True
+            return redirect(url_for('requisites_secret'))
+        else:
+            return '''
+            <!DOCTYPE html>
+            <html>
+            <head><meta charset="UTF-8"><title>Доступ запрещён</title>
+            <style>
+                body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;text-align:center;padding:50px}
+                .card{background:rgba(20,20,40,0.6);padding:30px;border-radius:24px;max-width:400px;margin:auto}
+                input,button{padding:10px;margin:10px;border-radius:8px;border:none}
+                button{background:#a855f7;color:white;cursor:pointer}
+            </style>
+            </head>
+            <body>
+            <div class="card">
+                <h1>🔒 Неверный пароль</h1>
+                <a href="/requisites/secret">Попробовать снова</a>
+            </div>
+            </body>
+            </html>
+            '''
+    
+    # Проверяем, авторизован ли пользователь
+    if session.get('requisites_auth'):
+        return '''<!DOCTYPE html>
 <html>
-<head><meta charset="UTF-8"><title>Реквизиты</title><style>body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;padding:40px}.card{background:rgba(20,20,40,0.6);backdrop-filter:blur(12px);padding:30px;border-radius:24px;max-width:700px;margin:auto;border:1px solid rgba(168,85,247,0.3)}h1{color:#a855f7}h2{color:#f59e0b}</style></head>
-<body><div class="card"><h1>🔐 Реквизиты самозанятого</h1><p><strong>ФИО:</strong> Юренко Богдан Петрович</p><p><strong>ИНН:</strong> 231408820790</p><p><strong>Статус:</strong> Самозанятый</p><hr><p><strong>Email:</strong> bogdanyrenko@gmail.com</p><p><strong>Сайт:</strong> https://video-downloader-r3y6.onrender.com</p><h2>📋 Условия оплаты</h2><ul><li>Оплата через ЮKassa (банковская карта)</li><li>Стоимость: 50₽/месяц</li></ul><h2>↩️ Условия возврата</h2><ul><li>Возврат в течение 14 дней</li><li>Связь: bogdanyrenko@gmail.com</li></ul></div></body></html>'''
+<head><meta charset="UTF-8"><title>Реквизиты</title>
+<style>body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;padding:40px}.card{background:rgba(20,20,40,0.6);backdrop-filter:blur(12px);padding:30px;border-radius:24px;max-width:700px;margin:auto;border:1px solid rgba(168,85,247,0.3)}h1{color:#a855f7}h2{color:#f59e0b}</style>
+</head>
+<body>
+<div class="card">
+    <h1>🔐 Реквизиты самозанятого</h1>
+    <p><strong>ФИО:</strong> Юренко Богдан Петрович</p>
+    <p><strong>ИНН:</strong> 231408820790</p>
+    <p><strong>Статус:</strong> Самозанятый</p>
+    <hr>
+    <p><strong>Email:</strong> bogdanyrenko@gmail.com</p>
+    <p><strong>Сайт:</strong> https://video-downloader-r3y6.onrender.com</p>
+    <h2>📋 Условия оплаты</h2>
+    <ul><li>Оплата через ЮKassa (банковская карта)</li><li>Стоимость: 50₽/месяц</li></ul>
+    <h2>↩️ Условия возврата</h2>
+    <ul><li>Возврат в течение 14 дней</li><li>Связь: bogdanyrenko@gmail.com</li></ul>
+    <p><a href="/logout-requisites">Выйти</a> | <a href="/">На главную</a></p>
+</div>
+</body>
+</html>'''
+    
+    # Показываем форму входа
+    return '''
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="UTF-8"><title>Введите пароль</title>
+    <style>
+        body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;text-align:center;padding:50px}
+        .card{background:rgba(20,20,40,0.6);padding:30px;border-radius:24px;max-width:400px;margin:auto}
+        input,button{padding:10px;margin:10px;border-radius:8px;border:none}
+        button{background:#a855f7;color:white;cursor:pointer}
+    </style>
+    </head>
+    <body>
+    <div class="card">
+        <h1>🔒 Доступ к реквизитам</h1>
+        <p>Введите пароль для продолжения</p>
+        <form method="POST">
+            <input type="password" name="password" placeholder="Пароль" autofocus>
+            <br>
+            <button type="submit">Войти</button>
+        </form>
+    </div>
+    </body>
+    </html>
+    '''
+
+@app.route('/logout-requisites')
+def logout_requisites():
+    session.pop('requisites_auth', None)
+    return redirect(url_for('index'))
 
 @app.route('/return-policy')
 def return_policy():
