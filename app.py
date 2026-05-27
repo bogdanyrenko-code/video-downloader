@@ -23,7 +23,7 @@ app.secret_key = os.environ.get('SECRET_KEY', 'super-secret-key-2024-change-me')
 
 # =========== НАСТРОЙКИ ЮKASSA (ТЕСТОВЫЙ РЕЖИМ) ===========
 YOOKASSA_SHOP_ID = "1369767"
-YOOKASSA_SECRET_KEY = "test_92d73ZaVYlLk9i1BvEwS6p5tflhwj7PSqiutGHHtosY"
+YOOKASSA_SECRET_KEY = "test_bnUzopYIE4j-h9PiqeM2I0D16sHjo9C2CBBwVCJyJf4"
 
 Configuration.configure(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY)
 
@@ -36,8 +36,8 @@ PREMIUM_USERS = {}
 DOWNLOAD_STATS = {}
 USER_SESSIONS = {}
 
-MAX_FREE_DOWNLOADS_PER_DAY = 5
-MAX_VIDEO_SIZE_FREE_MB = 100
+MAX_FREE_DOWNLOADS_PER_WEEK = 3
+MAX_VIDEO_SIZE_FREE_MB = 200
 MAX_VIDEO_SIZE_PREMIUM_MB = 500
 CLEANUP_INTERVAL = 3600
 FILE_RETENTION_TIME = 1800
@@ -106,25 +106,34 @@ def add_premium(user_id, days=30):
     save_premium_users()
     logger.info(f"Премиум активирован для {user_id} до {expire_date}")
 
+def get_week_key():
+    today = datetime.now()
+    week_start = today - timedelta(days=today.weekday())
+    return week_start.strftime('%Y-%W')
+
 def check_download_limit(user_id):
     if is_premium(user_id):
         return True, None
-    today = datetime.now().strftime('%Y-%m-%d')
+    
+    week_key = get_week_key()
     if user_id not in DOWNLOAD_STATS:
         DOWNLOAD_STATS[user_id] = {}
-    if today not in DOWNLOAD_STATS[user_id]:
-        DOWNLOAD_STATS[user_id][today] = 0
-    if DOWNLOAD_STATS[user_id][today] >= MAX_FREE_DOWNLOADS_PER_DAY:
-        return False, f"Достигнут лимит скачиваний ({MAX_FREE_DOWNLOADS_PER_DAY}/день). Купите премиум!"
+    
+    if week_key not in DOWNLOAD_STATS[user_id]:
+        DOWNLOAD_STATS[user_id][week_key] = 0
+    
+    if DOWNLOAD_STATS[user_id][week_key] >= MAX_FREE_DOWNLOADS_PER_WEEK:
+        return False, f"Достигнут лимит скачиваний ({MAX_FREE_DOWNLOADS_PER_WEEK} видео в неделю). Купите Premium для безлимита!"
+    
     return True, None
 
 def increment_download_count(user_id):
-    today = datetime.now().strftime('%Y-%m-%d')
+    week_key = get_week_key()
     if user_id not in DOWNLOAD_STATS:
         DOWNLOAD_STATS[user_id] = {}
-    if today not in DOWNLOAD_STATS[user_id]:
-        DOWNLOAD_STATS[user_id][today] = 0
-    DOWNLOAD_STATS[user_id][today] += 1
+    if week_key not in DOWNLOAD_STATS[user_id]:
+        DOWNLOAD_STATS[user_id][week_key] = 0
+    DOWNLOAD_STATS[user_id][week_key] += 1
 
 def rate_limit(max_requests=10, window=60):
     def decorator(f):
@@ -186,7 +195,12 @@ def get_video_info(url):
                             filesize_mb = '?'
                             if f.get('filesize'):
                                 filesize_mb = f"{f['filesize'] / 1024 / 1024:.1f}"
-                            formats.append({'format_id': f['format_id'], 'resolution': res_str, 'ext': f.get('ext', 'mp4'), 'filesize_mb': filesize_mb})
+                            formats.append({
+                                'format_id': f['format_id'],
+                                'resolution': res_str,
+                                'ext': f.get('ext', 'mp4'),
+                                'filesize_mb': filesize_mb
+                            })
                             seen_resolutions.add(res_str)
             return {'title': info.get('title', 'Видео'), 'thumbnail': info.get('thumbnail', ''), 'duration': info.get('duration', 0), 'formats': sorted(formats, key=lambda x: int(x['resolution'].replace('p', '')), reverse=True)}, None
     except Exception as e:
@@ -270,7 +284,6 @@ HTML_TEMPLATE = """
             cursor: default;
         }
 
-        /* Летающие сферы (фон) */
         #spheresContainer {
             position: fixed;
             top: 0;
@@ -620,7 +633,7 @@ HTML_TEMPLATE = """
                 {% if is_premium %}
                     <span class="premium-badge">⭐ PREMIUM до {{ premium_expire }}</span>
                 {% else %}
-                    <span class="free-badge">🔓 Бесплатный ({{ downloads_today }}/{{ max_downloads }} сегодня)</span>
+                    <span class="free-badge">🔓 Бесплатный (осталось {{ downloads_left }} из 3 скачиваний на этой неделе)</span>
                 {% endif %}
             </div>
             <div id="alertContainer"></div>
@@ -640,7 +653,7 @@ HTML_TEMPLATE = """
                 <h3>Премиум возможности</h3>
                 <div style="display:flex; justify-content:center; gap:30px; margin:20px 0; flex-wrap:wrap;">
                     <div><div style="font-size:2rem;">🚀</div><div>Безлимит</div></div>
-                    <div><div style="font-size:2rem;">🎯</div><div>4K качество</div></div>
+                    <div><div style="font-size:2rem;">🎯</div><div>Любое качество</div></div>
                     <div><div style="font-size:2rem;">⚡</div><div>Мгновенно</div></div>
                 </div>
                 <a href="/create_yookassa_payment" class="btn-premium">💳 Оплатить Premium 50₽ через ЮKassa</a>
@@ -740,12 +753,11 @@ HTML_TEMPLATE = """
                 data.formats.forEach(f => {
                     const div = document.createElement('div');
                     div.className = 'format-card';
-                    if(!data.premium && f.resolution !== '480p') div.style.opacity = '0.5';
                     div.innerHTML = `<strong>${f.resolution}</strong><br><small>${f.ext.toUpperCase()} · ${f.filesize_mb} МБ</small>`;
-                    if(!(!data.premium && f.resolution !== '480p')) div.onclick = () => { selectedFormat = f.format_id; document.querySelectorAll('.format-card').forEach(c => c.classList.remove('selected')); div.classList.add('selected'); };
+                    div.onclick = () => { selectedFormat = f.format_id; document.querySelectorAll('.format-card').forEach(c => c.classList.remove('selected')); div.classList.add('selected'); };
                     list.appendChild(div);
                 });
-                if(data.formats.length && (data.premium || data.formats[0].resolution === '480p')) selectedFormat = data.formats[0].format_id;
+                if(data.formats.length) selectedFormat = data.formats[0].format_id;
                 document.getElementById('videoInfo').style.display = 'block';
             } catch(e) { document.getElementById('loader').style.display = 'none'; showAlert('Ошибка сервера', 'error'); }
         }
@@ -772,10 +784,11 @@ HTML_TEMPLATE = """
 @app.route('/')
 def index():
     uid = get_user_id()
-    today = datetime.now().strftime('%Y-%m-%d')
-    downloads = DOWNLOAD_STATS.get(uid, {}).get(today, 0)
+    week_key = get_week_key()
+    downloads_week = DOWNLOAD_STATS.get(uid, {}).get(week_key, 0)
+    downloads_left = max(0, MAX_FREE_DOWNLOADS_PER_WEEK - downloads_week)
     expire = PREMIUM_USERS[uid]['expire'] if is_premium(uid) else None
-    return render_template_string(HTML_TEMPLATE, is_premium=is_premium(uid), premium_expire=expire, downloads_today=downloads, max_downloads=MAX_FREE_DOWNLOADS_PER_DAY)
+    return render_template_string(HTML_TEMPLATE, is_premium=is_premium(uid), premium_expire=expire, downloads_left=downloads_left)
 
 @app.route('/api/video-info', methods=['POST'])
 @rate_limit(20, 60)
@@ -786,12 +799,18 @@ def api_video_info():
         if not url:
             return jsonify({'error': 'URL не указан'}), 400
         uid = get_user_id()
+        
+        # Проверка лимита скачиваний (только для информации, не блокируем показ форматов)
         ok, err = check_download_limit(uid)
-        if not ok:
-            return jsonify({'error': err}), 403
+        # Не возвращаем ошибку, просто показываем форматы, но лимит проверим при скачивании
+        
         info, err = get_video_info(url)
         if err:
             return jsonify({'error': err}), 400
+        
+        # Добавляем флаг premium в ответ
+        info['premium'] = is_premium(uid)
+        
         return jsonify(info)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
