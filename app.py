@@ -21,7 +21,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'super-secret-key-2024-change-me')
 
-# =========== НАСТРОЙКИ ЮKASSA (ТЕСТОВЫЙ РЕЖИМ) ===========
+# =========== НАСТРОЙКИ ЮKASSA ===========
 YOOKASSA_SHOP_ID = "1369767"
 YOOKASSA_SECRET_KEY = "test_92d73ZaVYlLk9i1BvEwS6p5tflhwj7PSqiutGHHtosY"
 
@@ -87,9 +87,20 @@ cleanup_thread = Thread(target=cleanup_old_files, daemon=True)
 cleanup_thread.start()
 
 def get_user_id():
-    if 'user_id' not in session:
-        session['user_id'] = str(uuid.uuid4())
-    return session['user_id']
+    # Берём user_id из сессии или запроса
+    if 'user_id' in session:
+        return session['user_id']
+    
+    # Пытаемся получить из заголовка X-User-Id (с фронта)
+    user_id = request.headers.get('X-User-Id')
+    if user_id and user_id != 'null':
+        session['user_id'] = user_id
+        return user_id
+    
+    # Создаём новый
+    user_id = str(uuid.uuid4())
+    session['user_id'] = user_id
+    return user_id
 
 def is_premium(user_id):
     if user_id not in PREMIUM_USERS:
@@ -630,11 +641,7 @@ HTML_TEMPLATE = """
             </div>
             <div class="status-card">
                 <strong>📊 Статус:</strong>
-                {% if is_premium %}
-                    <span class="premium-badge">⭐ PREMIUM до {{ premium_expire }}</span>
-                {% else %}
-                    <span class="free-badge">🔓 Бесплатный (осталось {{ downloads_left }} из 3 скачиваний на этой неделе)</span>
-                {% endif %}
+                <span id="premiumStatus">🔍 Загрузка...</span>
             </div>
             <div id="alertContainer"></div>
             <input type="text" id="videoUrl" class="url-input" placeholder="Вставьте ссылку на видео..." autocomplete="off">
@@ -647,8 +654,7 @@ HTML_TEMPLATE = """
                 <div class="formats-grid" id="formatsList"></div>
                 <button class="btn" id="downloadBtn" onclick="downloadVideo()">⬇️ Скачать видео</button>
             </div>
-            {% if not is_premium %}
-            <div class="premium-card" style="margin-top:30px; text-align:center;">
+            <div class="premium-card" id="premiumCard" style="margin-top:30px; text-align:center; display:none;">
                 <div style="font-size:2rem;">✨</div>
                 <h3>Премиум возможности</h3>
                 <div style="display:flex; justify-content:center; gap:30px; margin:20px 0; flex-wrap:wrap;">
@@ -656,9 +662,8 @@ HTML_TEMPLATE = """
                     <div><div style="font-size:2rem;">🎯</div><div>Любое качество</div></div>
                     <div><div style="font-size:2rem;">⚡</div><div>Мгновенно</div></div>
                 </div>
-                <a href="/create_yookassa_payment" class="btn-premium">💳 Оплатить Premium 50₽ через ЮKassa</a>
+                <a href="#" id="payButton" class="btn-premium">💳 Оплатить Premium 50₽ через ЮKassa</a>
             </div>
-            {% endif %}
             <div class="footer">
                 <p>🎥 VideoSave — космическая скорость скачивания</p>
                 <p><a href="/return-policy">Политика возврата</a> | <a href="/requisites/secret?key=Bogdan2025Secure">Реквизиты</a></p>
@@ -670,6 +675,44 @@ HTML_TEMPLATE = """
         @keyframes spin { 100% { transform: rotate(360deg); } }
     </style>
     <script>
+        // ---------- ПОСТОЯННЫЙ ID ПОЛЬЗОВАТЕЛЯ ----------
+        let userId = localStorage.getItem('videoSaveUserId');
+        if (!userId) {
+            userId = crypto.randomUUID ? crypto.randomUUID() : 'user_' + Date.now() + '_' + Math.random().toString(36);
+            localStorage.setItem('videoSaveUserId', userId);
+        }
+        
+        // Отправляем user_id во всех запросах
+        function getHeaders() {
+            return {
+                'Content-Type': 'application/json',
+                'X-User-Id': userId
+            };
+        }
+        
+        // Проверка статуса премиум
+        async function checkPremiumStatus() {
+            try {
+                const response = await fetch('/api/premium-status', { headers: getHeaders() });
+                const data = await response.json();
+                const statusDiv = document.getElementById('premiumStatus');
+                const premiumCard = document.getElementById('premiumCard');
+                const payButton = document.getElementById('payButton');
+                
+                if (data.is_premium) {
+                    statusDiv.innerHTML = '<span class="premium-badge">⭐ PREMIUM до ' + data.expire_date + '</span>';
+                    if (premiumCard) premiumCard.style.display = 'none';
+                } else {
+                    statusDiv.innerHTML = '<span class="free-badge">🔓 Бесплатный (осталось ' + data.downloads_left + ' из 3 скачиваний на этой неделе)</span>';
+                    if (premiumCard) premiumCard.style.display = 'block';
+                    if (payButton) payButton.href = '/create_yookassa_payment';
+                }
+            } catch(e) {
+                console.error('Ошибка проверки статуса:', e);
+            }
+        }
+        
+        // ---------- МИНИ-ИГРА ----------
         let score = 0, spheres = [], achievementShown = false;
         const spheresContainer = document.getElementById('spheresContainer');
         const scoreElement = document.getElementById('scoreValue');
@@ -719,6 +762,7 @@ HTML_TEMPLATE = """
         setInterval(() => { if(spheres.length < 30) createSphere(); }, 2000);
         for(let i=0;i<15;i++) setTimeout(() => createSphere(), i*300);
 
+        // ---------- ТЕМА ----------
         const themeToggle = document.getElementById('themeToggle');
         const body = document.body;
         function setTheme(theme) {
@@ -728,12 +772,14 @@ HTML_TEMPLATE = """
         (localStorage.getItem('theme') === 'light') ? setTheme('light') : setTheme('dark');
         themeToggle.addEventListener('click', () => body.classList.contains('light') ? setTheme('dark') : setTheme('light'));
 
+        // ---------- ВИДЕО ----------
         let selectedFormat = null, currentVideoUrl = null;
         function showAlert(msg, type) {
             const container = document.getElementById('alertContainer');
             container.innerHTML = `<div class="alert alert-${type}" style="padding:12px; border-radius:20px; margin-bottom:20px; background:${type==='error'?'rgba(239,68,68,0.15)':'rgba(34,197,94,0.15)'}">${msg}</div>`;
             setTimeout(() => container.innerHTML = '', 5000);
         }
+        
         async function getVideoInfo() {
             const url = document.getElementById('videoUrl').value.trim();
             if(!url) { showAlert('Введите ссылку', 'error'); return; }
@@ -741,7 +787,7 @@ HTML_TEMPLATE = """
             document.getElementById('loader').style.display = 'block';
             document.getElementById('videoInfo').style.display = 'none';
             try {
-                const response = await fetch('/api/video-info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
+                const response = await fetch('/api/video-info', { method: 'POST', headers: getHeaders(), body: JSON.stringify({ url }) });
                 const data = await response.json();
                 document.getElementById('loader').style.display = 'none';
                 if(data.error) { showAlert(data.error, 'error'); return; }
@@ -761,10 +807,11 @@ HTML_TEMPLATE = """
                 document.getElementById('videoInfo').style.display = 'block';
             } catch(e) { document.getElementById('loader').style.display = 'none'; showAlert('Ошибка сервера', 'error'); }
         }
+        
         async function downloadVideo() {
             if(!selectedFormat || !currentVideoUrl) { showAlert('Выберите качество', 'error'); return; }
             try {
-                const response = await fetch('/api/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: currentVideoUrl, format_id: selectedFormat }) });
+                const response = await fetch('/api/download', { method: 'POST', headers: getHeaders(), body: JSON.stringify({ url: currentVideoUrl, format_id: selectedFormat }) });
                 if(!response.ok) { const data = await response.json(); throw new Error(data.error || 'Ошибка'); }
                 const blob = await response.blob();
                 const a = document.createElement('a');
@@ -773,9 +820,15 @@ HTML_TEMPLATE = """
                 a.click();
                 URL.revokeObjectURL(a.href);
                 showAlert('✅ Скачивание началось!', 'success');
+                // Обновляем статус после скачивания (обновится лимит)
+                checkPremiumStatus();
             } catch(e) { showAlert('Ошибка: '+e.message, 'error'); }
         }
+        
         document.getElementById('videoUrl').addEventListener('keypress', e => { if(e.key === 'Enter') getVideoInfo(); });
+        
+        // Загружаем статус при старте
+        checkPremiumStatus();
     </script>
 </body>
 </html>
@@ -783,12 +836,23 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    uid = get_user_id()
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route('/api/premium-status')
+def api_premium_status():
+    user_id = request.headers.get('X-User-Id')
+    if not user_id:
+        return jsonify({'is_premium': False, 'expire_date': None, 'downloads_left': MAX_FREE_DOWNLOADS_PER_WEEK})
+    
     week_key = get_week_key()
-    downloads_week = DOWNLOAD_STATS.get(uid, {}).get(week_key, 0)
+    downloads_week = DOWNLOAD_STATS.get(user_id, {}).get(week_key, 0)
     downloads_left = max(0, MAX_FREE_DOWNLOADS_PER_WEEK - downloads_week)
-    expire = PREMIUM_USERS[uid]['expire'] if is_premium(uid) else None
-    return render_template_string(HTML_TEMPLATE, is_premium=is_premium(uid), premium_expire=expire, downloads_left=downloads_left)
+    
+    if is_premium(user_id):
+        expire_date = PREMIUM_USERS[user_id]['expire']
+        return jsonify({'is_premium': True, 'expire_date': expire_date, 'downloads_left': downloads_left})
+    else:
+        return jsonify({'is_premium': False, 'expire_date': None, 'downloads_left': downloads_left})
 
 @app.route('/api/video-info', methods=['POST'])
 @rate_limit(20, 60)
@@ -798,18 +862,16 @@ def api_video_info():
         url = data.get('url', '').strip()
         if not url:
             return jsonify({'error': 'URL не указан'}), 400
-        uid = get_user_id()
-        
-        # Проверка лимита скачиваний (только для информации, не блокируем показ форматов)
-        ok, err = check_download_limit(uid)
-        # Не возвращаем ошибку, просто показываем форматы, но лимит проверим при скачивании
         
         info, err = get_video_info(url)
         if err:
             return jsonify({'error': err}), 400
         
-        # Добавляем флаг premium в ответ
-        info['premium'] = is_premium(uid)
+        user_id = request.headers.get('X-User-Id')
+        if user_id:
+            info['premium'] = is_premium(user_id)
+        else:
+            info['premium'] = False
         
         return jsonify(info)
     except Exception as e:
@@ -824,16 +886,23 @@ def api_download():
         fid = data.get('format_id', 'best')
         if not url:
             return jsonify({'error': 'URL не указан'}), 400
-        uid = get_user_id()
-        ok, err = check_download_limit(uid)
+        
+        user_id = request.headers.get('X-User-Id')
+        if not user_id:
+            user_id = str(uuid.uuid4())
+        
+        ok, err = check_download_limit(user_id)
         if not ok:
             return jsonify({'error': err}), 403
+        
         path, err = download_video(url, fid)
         if err:
             return jsonify({'error': err}), 400
         if not path or not os.path.exists(path):
             return jsonify({'error': 'Не удалось скачать'}), 500
-        increment_download_count(uid)
+        
+        increment_download_count(user_id)
+        
         @after_this_request
         def remove(resp):
             try:
@@ -842,13 +911,17 @@ def api_download():
             except:
                 pass
             return resp
+        
         return send_file(path, as_attachment=True, download_name='video.mp4')
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/create_yookassa_payment')
 def create_yookassa_payment():
-    user_id = get_user_id()
+    user_id = request.headers.get('X-User-Id')
+    if not user_id:
+        user_id = str(uuid.uuid4())
+    
     try:
         payment = Payment.create({
             "amount": {"value": "50.00", "currency": "RUB"},
@@ -864,7 +937,10 @@ def create_yookassa_payment():
 
 @app.route('/payment_success_yookassa')
 def payment_success_yookassa():
-    user_id = get_user_id()
+    user_id = request.args.get('user_id') or request.headers.get('X-User-Id')
+    if not user_id:
+        return redirect(url_for('index'))
+    
     add_premium(user_id, 30)
     logger.info(f"Премиум активирован для {user_id} через ЮKassa")
     return '''
