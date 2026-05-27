@@ -11,6 +11,7 @@ import yt_dlp
 import requests
 from threading import Thread
 from functools import wraps
+from yookassa import Configuration, Payment
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -20,6 +21,13 @@ ssl._create_default_https_context = ssl._create_unverified_context
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'super-secret-key-2024-change-me')
 
+# =========== НАСТРОЙКИ ЮKASSA (ТЕСТОВЫЙ РЕЖИМ) ===========
+YOOKASSA_SHOP_ID = "1369767"
+YOOKASSA_SECRET_KEY = "test_bnUzopYIE4j-h9PiqeM2I0D16sHjo9C2CBBwVCJyJf4"
+
+Configuration.configure(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY)
+
+# =========== ОСТАЛЬНЫЕ НАСТРОЙКИ ===========
 DOWNLOAD_FOLDER = "downloads"
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
@@ -36,7 +44,6 @@ FILE_RETENTION_TIME = 1800
 
 SECRET_REQUISITES_KEY = "Bogdan2025Secure"
 
-# ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------
 def load_premium_users():
     global PREMIUM_USERS
     if os.path.exists(PREMIUM_FILE):
@@ -204,7 +211,6 @@ def download_video(url, format_id='best'):
     except Exception as e:
         return None, str(e)
 
-# ---------- ДИЗАЙН С МИНИ-ИГРОЙ (СФЕРЫ ТОЛЬКО НА ФОНЕ) ----------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -214,11 +220,7 @@ HTML_TEMPLATE = """
     <title>VideoSave — Галактический загрузчик</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         :root {
             --bg-gradient: radial-gradient(ellipse at 20% 30%, #1a1a2e, #0f0f1a);
@@ -268,7 +270,7 @@ HTML_TEMPLATE = """
             cursor: default;
         }
 
-        /* Контейнер для сфер (низкий z-index, чтобы быть на фоне) */
+        /* Летающие сферы (фон) */
         #spheresContainer {
             position: fixed;
             top: 0;
@@ -280,7 +282,6 @@ HTML_TEMPLATE = """
             overflow: hidden;
         }
 
-        /* Летающие сферы для лопания */
         .pop-sphere {
             position: absolute;
             border-radius: 50%;
@@ -299,7 +300,6 @@ HTML_TEMPLATE = """
             75% { transform: translateY(-10px) translateX(20px); }
         }
 
-        /* Анимация взрыва */
         @keyframes popExplosion {
             0% { transform: scale(1); opacity: 1; }
             50% { transform: scale(1.8); opacity: 0.8; background: radial-gradient(circle, #ffaa00, #ff6600); }
@@ -310,7 +310,6 @@ HTML_TEMPLATE = """
             animation: popExplosion 0.3s ease-out forwards;
         }
 
-        /* Счётчик очков */
         .score-board {
             position: fixed;
             top: 20px;
@@ -329,11 +328,6 @@ HTML_TEMPLATE = """
             transition: all 0.3s;
         }
 
-        .score-board span:first-child {
-            font-size: 1.3rem;
-        }
-
-        /* Анимация "ТЫКУН!" */
         .achievement {
             position: fixed;
             top: 50%;
@@ -369,7 +363,6 @@ HTML_TEMPLATE = """
             100% { opacity: 0; transform: translate(-50%, -50%) scale(1.3); display: none; }
         }
 
-        /* Конфетти */
         .confetti {
             position: fixed;
             width: 10px;
@@ -393,7 +386,6 @@ HTML_TEMPLATE = """
             z-index: 20;
         }
 
-        /* Кнопка переключения темы */
         .theme-toggle {
             position: fixed;
             top: 20px;
@@ -413,12 +405,6 @@ HTML_TEMPLATE = """
             transition: all 0.3s ease;
         }
 
-        .theme-toggle:hover {
-            transform: scale(1.1) rotate(15deg);
-            border-color: var(--card-border-hover);
-        }
-
-        /* Стеклянная карточка */
         .glass-card {
             background: var(--card-bg);
             backdrop-filter: blur(16px);
@@ -485,12 +471,6 @@ HTML_TEMPLATE = """
             cursor: default;
         }
 
-        .platform-badge:hover {
-            border-color: #a855f7;
-            color: var(--text-primary);
-            transform: translateY(-2px);
-        }
-
         .status-card {
             background: var(--status-bg);
             border-radius: 24px;
@@ -513,11 +493,6 @@ HTML_TEMPLATE = """
             animation: glow 2s infinite;
         }
 
-        @keyframes glow {
-            0%, 100% { box-shadow: 0 0 0px #f59e0b; }
-            50% { box-shadow: 0 0 15px rgba(245, 158, 11, 0.5); }
-        }
-
         .free-badge {
             background: rgba(255, 255, 255, 0.1);
             padding: 8px 22px;
@@ -535,12 +510,6 @@ HTML_TEMPLATE = """
             color: var(--text-primary);
             transition: all 0.3s;
             margin-bottom: 20px;
-        }
-
-        .url-input:focus {
-            outline: none;
-            border-color: #a855f7;
-            box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15);
         }
 
         .btn {
@@ -573,40 +542,20 @@ HTML_TEMPLATE = """
             left: 100%;
         }
 
-        .btn:hover {
+        .btn-premium {
+            display: inline-block;
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            border-radius: 60px;
+            padding: 12px 32px;
+            color: white;
+            text-decoration: none;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+
+        .btn-premium:hover {
             transform: translateY(-2px);
-            box-shadow: 0 10px 25px -5px rgba(168, 85, 247, 0.4);
-        }
-
-        .loader {
-            display: none;
-            text-align: center;
-            padding: 40px;
-        }
-
-        .spinner {
-            width: 50px;
-            height: 50px;
-            border: 3px solid rgba(168, 85, 247, 0.2);
-            border-top: 3px solid #a855f7;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 15px;
-        }
-
-        @keyframes spin { 100% { transform: rotate(360deg); } }
-
-        .video-info {
-            display: none;
-            margin-top: 30px;
-            padding-top: 30px;
-            border-top: 1px solid var(--footer-border);
-        }
-
-        .video-info img {
-            width: 100%;
-            border-radius: 24px;
-            margin-bottom: 15px;
+            box-shadow: 0 10px 25px -5px rgba(245, 158, 11, 0.4);
         }
 
         .formats-grid {
@@ -627,88 +576,10 @@ HTML_TEMPLATE = """
             transition: all 0.3s cubic-bezier(0.2, 0.9, 0.4, 1.1);
         }
 
-        .format-card:hover {
-            transform: translateY(-3px);
-            border-color: #a855f7;
-            background: rgba(168, 85, 247, 0.1);
-        }
-
         .format-card.selected {
             background: rgba(168, 85, 247, 0.2);
             border-color: #a855f7;
             box-shadow: 0 0 15px rgba(168, 85, 247, 0.2);
-        }
-
-        .format-locked {
-            opacity: 0.4;
-            cursor: not-allowed;
-        }
-
-        .premium-card {
-            background: var(--premium-card-bg);
-            backdrop-filter: blur(4px);
-            border: 1px solid var(--premium-card-border);
-            border-radius: 32px;
-            padding: 28px;
-            margin-top: 30px;
-            text-align: center;
-            transition: all 0.4s;
-        }
-
-        .premium-card:hover {
-            border-color: #f59e0b;
-            transform: translateY(-4px);
-        }
-
-        .features {
-            display: flex;
-            justify-content: center;
-            gap: 40px;
-            margin: 20px 0;
-            flex-wrap: wrap;
-        }
-
-        .feature-item {
-            text-align: center;
-        }
-
-        .feature-icon {
-            font-size: 2rem;
-            margin-bottom: 8px;
-        }
-
-        .btn-premium {
-            display: inline-block;
-            background: linear-gradient(135deg, #f59e0b, #d97706);
-            border-radius: 60px;
-            padding: 12px 32px;
-            color: white;
-            text-decoration: none;
-            font-weight: bold;
-            transition: all 0.3s;
-        }
-
-        .btn-premium:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px -5px rgba(245, 158, 11, 0.4);
-        }
-
-        .alert {
-            padding: 14px;
-            border-radius: 20px;
-            margin-bottom: 20px;
-        }
-
-        .alert-error {
-            background: var(--alert-error-bg);
-            border: 1px solid var(--alert-error-border);
-            color: #fca5a5;
-        }
-
-        .alert-success {
-            background: var(--alert-success-bg);
-            border: 1px solid var(--alert-success-border);
-            color: #86efac;
         }
 
         .footer {
@@ -720,49 +591,23 @@ HTML_TEMPLATE = """
             color: var(--text-secondary);
         }
 
-        .footer a {
-            color: #a855f7;
-            text-decoration: none;
-        }
-
-        @keyframes fadeInScale {
-            from { opacity: 0; transform: scale(0.95) translateY(20px); }
-            to { opacity: 1; transform: scale(1) translateY(0); }
-        }
-
-        .animate {
-            animation: fadeInScale 0.5s ease-out;
-        }
-
         @media (max-width: 600px) {
             .glass-card { padding: 24px; }
             h1 { font-size: 2rem; }
-            .formats-grid { grid-template-columns: repeat(2, 1fr); }
-            .logo { font-size: 3rem; }
-            .theme-toggle { width: 40px; height: 40px; font-size: 1.2rem; top: 10px; right: 10px; }
-            .score-board { top: 10px; right: 60px; font-size: 1rem; padding: 6px 12px; }
-            .achievement { font-size: 2rem; padding: 15px 30px; white-space: nowrap; }
+            .score-board { top: 10px; right: 60px; font-size: 1rem; }
+            .achievement { font-size: 2rem; padding: 15px 30px; }
         }
     </style>
 </head>
 <body>
     <div id="spheresContainer"></div>
-
-    <div class="score-board">
-        <span>💥</span>
-        <span id="scoreValue">0</span>
-    </div>
-
-    <div class="theme-toggle" id="themeToggle">
-        🌙
-    </div>
-
+    <div class="score-board"><span>💥</span><span id="scoreValue">0</span></div>
+    <div class="theme-toggle" id="themeToggle">🌙</div>
     <div class="container">
         <div class="glass-card animate">
             <div class="logo">🎬</div>
             <h1>VideoSave</h1>
             <p class="subtitle">Галактический загрузчик видео</p>
-
             <div class="platforms">
                 <span class="platform-badge">YouTube</span>
                 <span class="platform-badge">RuTube</span>
@@ -770,7 +615,6 @@ HTML_TEMPLATE = """
                 <span class="platform-badge">Twitch</span>
                 <span class="platform-badge">TikTok</span>
             </div>
-
             <div class="status-card">
                 <strong>📊 Статус:</strong>
                 {% if is_premium %}
@@ -779,318 +623,152 @@ HTML_TEMPLATE = """
                     <span class="free-badge">🔓 Бесплатный ({{ downloads_today }}/{{ max_downloads }} сегодня)</span>
                 {% endif %}
             </div>
-
             <div id="alertContainer"></div>
-
             <input type="text" id="videoUrl" class="url-input" placeholder="Вставьте ссылку на видео..." autocomplete="off">
-            <button class="btn" id="getInfoBtn" onclick="getVideoInfo()">🎯 Получить информацию</button>
-
-            <div class="loader" id="loader">
-                <div class="spinner"></div>
-                <p>Обработка видео...</p>
-            </div>
-
-            <div class="video-info" id="videoInfo">
-                <img id="videoThumbnail" src="" alt="Превью">
+            <button class="btn" onclick="getVideoInfo()">🎯 Получить информацию</button>
+            <div class="loader" id="loader" style="display:none; text-align:center; padding:20px;"><div class="spinner" style="width:40px;height:40px;border:3px solid rgba(168,85,247,0.2);border-top-color:#a855f7;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto;"></div><p>Обработка...</p></div>
+            <div class="video-info" id="videoInfo" style="display:none; margin-top:30px;">
+                <img id="videoThumbnail" style="width:100%; border-radius:24px;">
                 <h3 id="videoTitle"></h3>
-                <div id="videoDuration" style="color: var(--text-secondary); margin-bottom: 15px;"></div>
+                <div id="videoDuration" style="color:var(--text-secondary); margin:10px 0;"></div>
                 <div class="formats-grid" id="formatsList"></div>
                 <button class="btn" id="downloadBtn" onclick="downloadVideo()">⬇️ Скачать видео</button>
             </div>
-
             {% if not is_premium %}
-            <div class="premium-card">
-                <div class="feature-icon" style="font-size: 2.2rem;">✨</div>
-                <h3 style="margin-bottom: 10px;">Премиум возможности</h3>
-                <div class="features">
-                    <div class="feature-item">
-                        <div class="feature-icon">🚀</div>
-                        <div>Безлимит</div>
-                    </div>
-                    <div class="feature-item">
-                        <div class="feature-icon">🎯</div>
-                        <div>4K качество</div>
-                    </div>
-                    <div class="feature-item">
-                        <div class="feature-icon">⚡</div>
-                        <div>Мгновенно</div>
-                    </div>
+            <div class="premium-card" style="margin-top:30px; text-align:center;">
+                <div style="font-size:2rem;">✨</div>
+                <h3>Премиум возможности</h3>
+                <div style="display:flex; justify-content:center; gap:30px; margin:20px 0; flex-wrap:wrap;">
+                    <div><div style="font-size:2rem;">🚀</div><div>Безлимит</div></div>
+                    <div><div style="font-size:2rem;">🎯</div><div>4K качество</div></div>
+                    <div><div style="font-size:2rem;">⚡</div><div>Мгновенно</div></div>
                 </div>
-                <a href="/create_payment" class="btn-premium">🌟 Получить Premium за 50₽/месяц</a>
+                <a href="/create_yookassa_payment" class="btn-premium">💳 Оплатить Premium 50₽ через ЮKassa</a>
             </div>
             {% endif %}
-
             <div class="footer">
                 <p>🎥 VideoSave — космическая скорость скачивания</p>
-                <p><a href="/return-policy">Политика возврата</a></p>
+                <p><a href="/return-policy">Политика возврата</a> | <a href="/requisites/secret?key=Bogdan2025Secure">Реквизиты</a></p>
             </div>
         </div>
     </div>
-
+    <style>
+        .loader .spinner { animation: spin 1s linear infinite; }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+    </style>
     <script>
-        // ---------- МИНИ-ИГРА: ЛОПАНИЕ СФЕР ----------
-        let score = 0;
-        const spheres = [];
+        let score = 0, spheres = [], achievementShown = false;
         const spheresContainer = document.getElementById('spheresContainer');
         const scoreElement = document.getElementById('scoreValue');
-        let achievementShown = false;
-        
+
         function createSphere() {
             const sphere = document.createElement('div');
             sphere.classList.add('pop-sphere');
             const size = Math.random() * 40 + 30;
             sphere.style.width = size + 'px';
             sphere.style.height = size + 'px';
-            // Позиционирование с учётом отступов от краёв, чтобы не перекрывать контент
             sphere.style.left = Math.random() * (window.innerWidth - 100) + 'px';
             sphere.style.top = Math.random() * (window.innerHeight - 100) + 'px';
             sphere.style.background = `radial-gradient(circle at 30% 30%, rgba(168,85,247,0.85), rgba(124,58,237,0.65))`;
-            sphere.style.boxShadow = `0 0 20px rgba(168,85,247,0.5)`;
             sphere.style.animationDuration = (Math.random() * 5 + 5) + 's';
-            
-            sphere.addEventListener('mouseenter', () => {
-                document.body.style.cursor = 'crosshair';
-            });
-            sphere.addEventListener('mouseleave', () => {
-                document.body.style.cursor = 'default';
-            });
-            
-            sphere.addEventListener('click', (e) => {
-                e.stopPropagation();
-                popSphere(sphere);
-            });
-            
+            sphere.addEventListener('click', (e) => { e.stopPropagation(); popSphere(sphere); });
             spheresContainer.appendChild(sphere);
             spheres.push(sphere);
-            
-            setTimeout(() => {
-                if (sphere.parentNode) {
-                    sphere.remove();
-                    const index = spheres.indexOf(sphere);
-                    if (index !== -1) spheres.splice(index, 1);
-                }
-            }, 15000);
+            setTimeout(() => { if(sphere.parentNode) { sphere.remove(); spheres = spheres.filter(s => s !== sphere); } }, 15000);
         }
-        
-        function showAchievement() {
-            if (achievementShown) return;
-            achievementShown = true;
-            
-            // Плашка "ТЫКУН!"
-            const achievementDiv = document.createElement('div');
-            achievementDiv.className = 'achievement';
-            achievementDiv.textContent = 'ТЫКУН!';
-            document.body.appendChild(achievementDiv);
-            
-            // Конфетти
-            for (let i = 0; i < 100; i++) {
-                const confetti = document.createElement('div');
-                confetti.className = 'confetti';
-                confetti.style.left = Math.random() * window.innerWidth + 'px';
-                confetti.style.backgroundColor = `hsl(${Math.random() * 360}, 100%, 50%)`;
-                confetti.style.width = Math.random() * 8 + 4 + 'px';
-                confetti.style.height = Math.random() * 8 + 4 + 'px';
-                confetti.style.animationDelay = Math.random() * 2 + 's';
-                confetti.style.animationDuration = Math.random() * 2 + 2 + 's';
-                document.body.appendChild(confetti);
-                setTimeout(() => confetti.remove(), 3000);
-            }
-            
-            setTimeout(() => {
-                achievementDiv.classList.add('achievement-fade');
-                setTimeout(() => {
-                    if (achievementDiv.parentNode) achievementDiv.remove();
-                }, 2000);
-            }, 1500);
-        }
-        
+
         function popSphere(sphere) {
             sphere.classList.add('pop-animation');
-            try {
-                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                const oscillator = audioCtx.createOscillator();
-                const gainNode = audioCtx.createGain();
-                oscillator.connect(gainNode);
-                gainNode.connect(audioCtx.destination);
-                oscillator.frequency.value = 800;
-                gainNode.gain.value = 0.08;
-                oscillator.start();
-                gainNode.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + 0.3);
-                oscillator.stop(audioCtx.currentTime + 0.3);
-            } catch(e) {}
-            
             score++;
             scoreElement.textContent = score;
-            
-            if (score === 100) {
-                showAchievement();
-            }
-            
-            scoreElement.style.transform = 'scale(1.3)';
-            setTimeout(() => { scoreElement.style.transform = 'scale(1)'; }, 200);
-            
-            setTimeout(() => {
-                if (sphere.parentNode) sphere.remove();
-                const index = spheres.indexOf(sphere);
-                if (index !== -1) spheres.splice(index, 1);
-            }, 300);
-        }
-        
-        setInterval(() => {
-            if (spheres.length < 30) {
-                createSphere();
-            }
-        }, 2000);
-        
-        for (let i = 0; i < 15; i++) {
-            setTimeout(() => createSphere(), i * 300);
-        }
-        
-        window.addEventListener('resize', () => {
-            spheres.forEach(sphere => {
-                let left = parseFloat(sphere.style.left);
-                let top = parseFloat(sphere.style.top);
-                if (left + sphere.offsetWidth > window.innerWidth) {
-                    sphere.style.left = (window.innerWidth - sphere.offsetWidth - 10) + 'px';
+            if(score === 100 && !achievementShown) {
+                achievementShown = true;
+                const achievementDiv = document.createElement('div');
+                achievementDiv.className = 'achievement';
+                achievementDiv.textContent = 'ТЫКУН!';
+                document.body.appendChild(achievementDiv);
+                for(let i=0;i<100;i++) {
+                    const conf = document.createElement('div');
+                    conf.className = 'confetti';
+                    conf.style.left = Math.random() * window.innerWidth + 'px';
+                    conf.style.backgroundColor = `hsl(${Math.random() * 360}, 100%, 50%)`;
+                    conf.style.width = Math.random() * 8 + 4 + 'px';
+                    conf.style.animationDuration = Math.random() * 2 + 2 + 's';
+                    document.body.appendChild(conf);
+                    setTimeout(() => conf.remove(), 3000);
                 }
-                if (top + sphere.offsetHeight > window.innerHeight) {
-                    sphere.style.top = (window.innerHeight - sphere.offsetHeight - 10) + 'px';
-                }
-            });
-        });
-        
-        // ---------- ПЕРЕКЛЮЧЕНИЕ ТЕМЫ ----------
+                setTimeout(() => achievementDiv.classList.add('achievement-fade'), 1500);
+                setTimeout(() => achievementDiv.remove(), 3500);
+            }
+            setTimeout(() => { if(sphere.parentNode) sphere.remove(); spheres = spheres.filter(s => s !== sphere); }, 300);
+        }
+
+        setInterval(() => { if(spheres.length < 30) createSphere(); }, 2000);
+        for(let i=0;i<15;i++) setTimeout(() => createSphere(), i*300);
+
         const themeToggle = document.getElementById('themeToggle');
         const body = document.body;
-
         function setTheme(theme) {
-            if (theme === 'light') {
-                body.classList.add('light');
-                themeToggle.innerHTML = '🌙';
-                localStorage.setItem('theme', 'light');
-            } else {
-                body.classList.remove('light');
-                themeToggle.innerHTML = '☀️';
-                localStorage.setItem('theme', 'dark');
-            }
+            if(theme === 'light') { body.classList.add('light'); themeToggle.innerHTML = '🌙'; localStorage.setItem('theme', 'light'); }
+            else { body.classList.remove('light'); themeToggle.innerHTML = '☀️'; localStorage.setItem('theme', 'dark'); }
         }
+        (localStorage.getItem('theme') === 'light') ? setTheme('light') : setTheme('dark');
+        themeToggle.addEventListener('click', () => body.classList.contains('light') ? setTheme('dark') : setTheme('light'));
 
-        const savedTheme = localStorage.getItem('theme');
-        if (savedTheme === 'light') {
-            setTheme('light');
-        } else {
-            setTheme('dark');
-        }
-
-        themeToggle.addEventListener('click', () => {
-            if (body.classList.contains('light')) {
-                setTheme('dark');
-            } else {
-                setTheme('light');
-            }
-        });
-        
-        // ---------- ЛОГИКА ВИДЕО ----------
-        let selectedFormat = null;
-        let currentVideoUrl = null;
-
-        function showAlert(message, type) {
+        let selectedFormat = null, currentVideoUrl = null;
+        function showAlert(msg, type) {
             const container = document.getElementById('alertContainer');
-            container.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
+            container.innerHTML = `<div class="alert alert-${type}" style="padding:12px; border-radius:20px; margin-bottom:20px; background:${type==='error'?'rgba(239,68,68,0.15)':'rgba(34,197,94,0.15)'}">${msg}</div>`;
             setTimeout(() => container.innerHTML = '', 5000);
         }
-
         async function getVideoInfo() {
             const url = document.getElementById('videoUrl').value.trim();
-            if (!url) { showAlert('Введите ссылку на видео', 'error'); return; }
+            if(!url) { showAlert('Введите ссылку', 'error'); return; }
             currentVideoUrl = url;
             document.getElementById('loader').style.display = 'block';
             document.getElementById('videoInfo').style.display = 'none';
             try {
-                const response = await fetch('/api/video-info', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: url })
-                });
+                const response = await fetch('/api/video-info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
                 const data = await response.json();
                 document.getElementById('loader').style.display = 'none';
-                if (data.error) { showAlert(data.error, 'error'); return; }
+                if(data.error) { showAlert(data.error, 'error'); return; }
                 document.getElementById('videoThumbnail').src = data.thumbnail || '';
                 document.getElementById('videoTitle').innerText = data.title;
-                if (data.duration) {
-                    const min = Math.floor(data.duration / 60);
-                    const sec = data.duration % 60;
-                    document.getElementById('videoDuration').innerHTML = `⏱️ Длительность: ${min}:${sec.toString().padStart(2, '0')}`;
-                }
+                if(data.duration) document.getElementById('videoDuration').innerHTML = `⏱️ Длительность: ${Math.floor(data.duration/60)}:${(data.duration%60).toString().padStart(2,'0')}`;
                 const list = document.getElementById('formatsList');
                 list.innerHTML = '';
-                data.formats.forEach(format => {
+                data.formats.forEach(f => {
                     const div = document.createElement('div');
                     div.className = 'format-card';
-                    if (!data.premium && format.resolution !== '480p') div.classList.add('format-locked');
-                    div.innerHTML = `<strong>${format.resolution}</strong><br><small>${format.ext.toUpperCase()} · ${format.filesize_mb} МБ</small>`;
-                    if (!(!data.premium && format.resolution !== '480p')) {
-                        div.onclick = () => {
-                            selectedFormat = format.format_id;
-                            document.querySelectorAll('.format-card').forEach(c => c.classList.remove('selected'));
-                            div.classList.add('selected');
-                        };
-                    }
+                    if(!data.premium && f.resolution !== '480p') div.style.opacity = '0.5';
+                    div.innerHTML = `<strong>${f.resolution}</strong><br><small>${f.ext.toUpperCase()} · ${f.filesize_mb} МБ</small>`;
+                    if(!(!data.premium && f.resolution !== '480p')) div.onclick = () => { selectedFormat = f.format_id; document.querySelectorAll('.format-card').forEach(c => c.classList.remove('selected')); div.classList.add('selected'); };
                     list.appendChild(div);
                 });
-                if (data.formats.length > 0 && (data.premium || data.formats[0].resolution === '480p')) {
-                    selectedFormat = data.formats[0].format_id;
-                    list.firstChild?.classList.add('selected');
-                }
+                if(data.formats.length && (data.premium || data.formats[0].resolution === '480p')) selectedFormat = data.formats[0].format_id;
                 document.getElementById('videoInfo').style.display = 'block';
-            } catch (err) {
-                document.getElementById('loader').style.display = 'none';
-                showAlert('Ошибка сервера', 'error');
-            }
+            } catch(e) { document.getElementById('loader').style.display = 'none'; showAlert('Ошибка сервера', 'error'); }
         }
-
         async function downloadVideo() {
-            if (!selectedFormat || !currentVideoUrl) { showAlert('Выберите качество видео', 'error'); return; }
+            if(!selectedFormat || !currentVideoUrl) { showAlert('Выберите качество', 'error'); return; }
             try {
-                const response = await fetch('/api/download', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: currentVideoUrl, format_id: selectedFormat })
-                });
-                if (!response.ok) {
-                    const data = await response.json();
-                    throw new Error(data.error || 'Ошибка');
-                }
+                const response = await fetch('/api/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: currentVideoUrl, format_id: selectedFormat }) });
+                if(!response.ok) { const data = await response.json(); throw new Error(data.error || 'Ошибка'); }
                 const blob = await response.blob();
-                const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
-                a.href = url;
-                let filename = 'video.mp4';
-                const cd = response.headers.get('Content-Disposition');
-                if (cd) {
-                    const match = cd.match(/filename="?(.+)"?/);
-                    if (match) filename = match[1];
-                }
-                a.download = filename;
-                document.body.appendChild(a);
+                a.href = URL.createObjectURL(blob);
+                a.download = 'video.mp4';
                 a.click();
-                document.body.removeChild(a);
-                window.URL.revokeObjectURL(url);
+                URL.revokeObjectURL(a.href);
                 showAlert('✅ Скачивание началось!', 'success');
-            } catch (err) {
-                showAlert('Ошибка: ' + err.message, 'error');
-            }
+            } catch(e) { showAlert('Ошибка: '+e.message, 'error'); }
         }
-
-        document.getElementById('videoUrl').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') getVideoInfo();
-        });
+        document.getElementById('videoUrl').addEventListener('keypress', e => { if(e.key === 'Enter') getVideoInfo(); });
     </script>
 </body>
 </html>
 """
 
-# ---------- МАРШРУТЫ ----------
 @app.route('/')
 def index():
     uid = get_user_id()
@@ -1149,6 +827,51 @@ def api_download():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/create_yookassa_payment')
+def create_yookassa_payment():
+    user_id = get_user_id()
+    try:
+        payment = Payment.create({
+            "amount": {"value": "50.00", "currency": "RUB"},
+            "confirmation": {"type": "redirect", "return_url": "https://video-downloader-r3y6.onrender.com/payment_success_yookassa"},
+            "capture": True,
+            "description": f"Premium подписка на 30 дней (user: {user_id})",
+            "metadata": {"user_id": user_id}
+        })
+        return redirect(payment.confirmation.confirmation_url)
+    except Exception as e:
+        logger.error(f"Ошибка при создании платежа: {e}")
+        return f"Ошибка при создании платежа: {e}"
+
+@app.route('/payment_success_yookassa')
+def payment_success_yookassa():
+    user_id = get_user_id()
+    add_premium(user_id, 30)
+    logger.info(f"Премиум активирован для {user_id} через ЮKassa")
+    return '''
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Оплата прошла</title><meta http-equiv="refresh" content="3;url=/"><style>body{background:#0f0c29;color:#fff;text-align:center;padding:50px;font-family:Arial}h1{color:#22c55e}</style></head>
+<body><h1>✅ Оплата прошла успешно!</h1><p>Ваша премиум-подписка активирована.</p><p>Через 3 секунды вы вернётесь на главную.</p><a href="/" style="color:#a855f7;">Вернуться сейчас</a></body>
+</html>'''
+
+@app.route('/yookassa-webhook', methods=['POST'])
+def yookassa_webhook():
+    try:
+        data = request.json
+        logger.info(f"Webhook от ЮKassa: {data}")
+        if data.get('event') == 'payment.succeeded':
+            payment = data.get('object', {})
+            metadata = payment.get('metadata', {})
+            user_id = metadata.get('user_id')
+            if user_id:
+                add_premium(user_id, 30)
+                logger.info(f"Премиум активирован для {user_id} через webhook")
+        return jsonify({'status': 'ok'}), 200
+    except Exception as e:
+        logger.error(f"Ошибка webhook: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/requisites')
 def requisites_redirect():
     return redirect(url_for('index'))
@@ -1160,82 +883,15 @@ def requisites_secret():
         return "Доступ запрещён", 403
     return '''<!DOCTYPE html>
 <html>
-<head><meta charset="UTF-8"><title>Реквизиты</title>
-<style>body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;padding:40px}.card{background:rgba(20,20,40,0.6);backdrop-filter:blur(12px);padding:30px;border-radius:24px;max-width:700px;margin:auto;border:1px solid rgba(168,85,247,0.3)}h1{color:#a855f7}h2{color:#f59e0b}</style>
-</head>
-<body>
-<div class="card">
-<h1>🔐 Реквизиты самозанятого</h1>
-<p><strong>ФИО:</strong> Юренко Богдан Петрович</p>
-<p><strong>ИНН:</strong> 231408820790</p>
-<p><strong>Статус:</strong> Самозанятый</p>
-<hr>
-<p><strong>Email:</strong> bogdanyrenko@gmail.com</p>
-<p><strong>Сайт:</strong> https://video-downloader-r3y6.onrender.com</p>
-<h2>📋 Условия оплаты</h2>
-<ul><li>Оплата через банковскую карту</li><li>Стоимость: 50₽/месяц</li></ul>
-<h2>↩️ Условия возврата</h2>
-<ul><li>Возврат в течение 14 дней</li><li>Связь: bogdanyrenko@gmail.com</li></ul>
-</div>
-</body>
-</html>'''
+<head><meta charset="UTF-8"><title>Реквизиты</title><style>body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;padding:40px}.card{background:rgba(20,20,40,0.6);backdrop-filter:blur(12px);padding:30px;border-radius:24px;max-width:700px;margin:auto;border:1px solid rgba(168,85,247,0.3)}h1{color:#a855f7}h2{color:#f59e0b}</style></head>
+<body><div class="card"><h1>🔐 Реквизиты самозанятого</h1><p><strong>ФИО:</strong> Юренко Богдан Петрович</p><p><strong>ИНН:</strong> 231408820790</p><p><strong>Статус:</strong> Самозанятый</p><hr><p><strong>Email:</strong> bogdanyrenko@gmail.com</p><p><strong>Сайт:</strong> https://video-downloader-r3y6.onrender.com</p><h2>📋 Условия оплаты</h2><ul><li>Оплата через ЮKassa (банковская карта)</li><li>Стоимость: 50₽/месяц</li></ul><h2>↩️ Условия возврата</h2><ul><li>Возврат в течение 14 дней</li><li>Связь: bogdanyrenko@gmail.com</li></ul></div></body></html>'''
 
 @app.route('/return-policy')
 def return_policy():
     return '''<!DOCTYPE html>
 <html>
-<head><meta charset="UTF-8"><title>Условия возврата</title>
-<style>body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;padding:40px}.card{background:rgba(20,20,40,0.6);backdrop-filter:blur(12px);padding:30px;border-radius:24px;max-width:700px;margin:auto;border:1px solid rgba(168,85,247,0.3)}h1{color:#a855f7}</style>
-</head>
-<body>
-<div class="card">
-<h1>📋 Политика возврата</h1>
-<h2>Условия оплаты</h2>
-<ul><li>Оплата через банковскую карту</li><li>Стоимость: 50₽/месяц</li></ul>
-<h2>Условия возврата</h2>
-<ul><li>Возврат в течение 14 дней</li><li>Для возврата: bogdanyrenko@gmail.com</li></ul>
-<a href="/">← На главную</a>
-</div>
-</body>
-</html>'''
-
-@app.route('/create_payment')
-def create_payment():
-    uid = get_user_id()
-    return f'''<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Оплата</title>
-<style>body{{background:#0f0f1a;color:#e0e0e0;text-align:center;padding:40px}}.container{{max-width:400px;margin:auto;background:rgba(20,20,40,0.6);backdrop-filter:blur(12px);padding:30px;border-radius:24px;border:1px solid rgba(168,85,247,0.3)}}button{{background:#f59e0b;padding:15px 30px;border:none;border-radius:30px;font-size:18px;cursor:pointer;color:white;font-weight:bold}}</style>
-</head>
-<body>
-<div class="container">
-<h1>💎 Premium подписка</h1>
-<p><strong>50 ₽ / месяц</strong></p>
-<form action="https://merchant.intellectmoney.ru/ru/payment/" method="POST">
-<input type="hidden" name="eshopId" value="472541">
-<input type="hidden" name="paymentAmount" value="50">
-<input type="hidden" name="paymentCurrency" value="RUB">
-<input type="hidden" name="paymentDesc" value="Premium подписка на 30 дней">
-<input type="hidden" name="successUrl" value="https://video-downloader-r3y6.onrender.com/payment_success">
-<input type="hidden" name="failUrl" value="https://video-downloader-r3y6.onrender.com/create_payment">
-<input type="hidden" name="user_id" value="{uid}">
-<button type="submit">Перейти к оплате 50 ₽</button>
-</form>
-<a href="/return-policy">📋 Политика возврата</a> | <a href="/">← На главную</a>
-</div>
-</body>
-</html>'''
-
-@app.route('/payment_success', methods=['GET', 'POST'])
-def payment_success():
-    if request.method == 'POST':
-        data = request.form
-        if data.get('paymentStatus') == '5':
-            uid = data.get('user_id')
-            if uid:
-                add_premium(uid, 30)
-        return 'OK', 200
-    return '''<html><head><meta http-equiv="refresh" content="2;url=/"></head><body><h1>✅ Оплата прошла</h1><p>Возврат...</p></body></html>'''
+<head><meta charset="UTF-8"><title>Условия возврата</title><style>body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;padding:40px}.card{background:rgba(20,20,40,0.6);backdrop-filter:blur(12px);padding:30px;border-radius:24px;max-width:700px;margin:auto;border:1px solid rgba(168,85,247,0.3)}h1{color:#a855f7}</style></head>
+<body><div class="card"><h1>📋 Политика возврата</h1><h2>Условия оплаты</h2><ul><li>Оплата через ЮKassa</li><li>Стоимость: 50₽/месяц</li></ul><h2>Условия возврата</h2><ul><li>Возврат в течение 14 дней</li><li>Для возврата: bogdanyrenko@gmail.com</li></ul><a href="/">← На главную</a></div></body></html>'''
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
