@@ -87,17 +87,14 @@ cleanup_thread = Thread(target=cleanup_old_files, daemon=True)
 cleanup_thread.start()
 
 def get_user_id():
-    # Берём user_id из сессии или запроса
     if 'user_id' in session:
         return session['user_id']
     
-    # Пытаемся получить из заголовка X-User-Id (с фронта)
     user_id = request.headers.get('X-User-Id')
     if user_id and user_id != 'null':
         session['user_id'] = user_id
         return user_id
     
-    # Создаём новый
     user_id = str(uuid.uuid4())
     session['user_id'] = user_id
     return user_id
@@ -675,14 +672,12 @@ HTML_TEMPLATE = """
         @keyframes spin { 100% { transform: rotate(360deg); } }
     </style>
     <script>
-        // ---------- ПОСТОЯННЫЙ ID ПОЛЬЗОВАТЕЛЯ ----------
         let userId = localStorage.getItem('videoSaveUserId');
         if (!userId) {
             userId = crypto.randomUUID ? crypto.randomUUID() : 'user_' + Date.now() + '_' + Math.random().toString(36);
             localStorage.setItem('videoSaveUserId', userId);
         }
         
-        // Отправляем user_id во всех запросах
         function getHeaders() {
             return {
                 'Content-Type': 'application/json',
@@ -690,7 +685,6 @@ HTML_TEMPLATE = """
             };
         }
         
-        // Проверка статуса премиум
         async function checkPremiumStatus() {
             try {
                 const response = await fetch('/api/premium-status', { headers: getHeaders() });
@@ -712,7 +706,6 @@ HTML_TEMPLATE = """
             }
         }
         
-        // ---------- МИНИ-ИГРА ----------
         let score = 0, spheres = [], achievementShown = false;
         const spheresContainer = document.getElementById('spheresContainer');
         const scoreElement = document.getElementById('scoreValue');
@@ -762,7 +755,6 @@ HTML_TEMPLATE = """
         setInterval(() => { if(spheres.length < 30) createSphere(); }, 2000);
         for(let i=0;i<15;i++) setTimeout(() => createSphere(), i*300);
 
-        // ---------- ТЕМА ----------
         const themeToggle = document.getElementById('themeToggle');
         const body = document.body;
         function setTheme(theme) {
@@ -772,7 +764,6 @@ HTML_TEMPLATE = """
         (localStorage.getItem('theme') === 'light') ? setTheme('light') : setTheme('dark');
         themeToggle.addEventListener('click', () => body.classList.contains('light') ? setTheme('dark') : setTheme('light'));
 
-        // ---------- ВИДЕО ----------
         let selectedFormat = null, currentVideoUrl = null;
         function showAlert(msg, type) {
             const container = document.getElementById('alertContainer');
@@ -820,14 +811,12 @@ HTML_TEMPLATE = """
                 a.click();
                 URL.revokeObjectURL(a.href);
                 showAlert('✅ Скачивание началось!', 'success');
-                // Обновляем статус после скачивания (обновится лимит)
                 checkPremiumStatus();
             } catch(e) { showAlert('Ошибка: '+e.message, 'error'); }
         }
         
         document.getElementById('videoUrl').addEventListener('keypress', e => { if(e.key === 'Enter') getVideoInfo(); });
         
-        // Загружаем статус при старте
         checkPremiumStatus();
     </script>
 </body>
@@ -925,7 +914,10 @@ def create_yookassa_payment():
     try:
         payment = Payment.create({
             "amount": {"value": "50.00", "currency": "RUB"},
-            "confirmation": {"type": "redirect", "return_url": "https://video-downloader-r3y6.onrender.com/payment_success_yookassa"},
+            "confirmation": {
+                "type": "redirect", 
+                "return_url": f"https://video-downloader-r3y6.onrender.com/payment_success_yookassa?user_id={user_id}"
+            },
             "capture": True,
             "description": f"Premium подписка на 30 дней (user: {user_id})",
             "metadata": {"user_id": user_id}
@@ -937,18 +929,47 @@ def create_yookassa_payment():
 
 @app.route('/payment_success_yookassa')
 def payment_success_yookassa():
-    user_id = request.args.get('user_id') or request.headers.get('X-User-Id')
+    user_id = request.args.get('user_id')
     if not user_id:
-        return redirect(url_for('index'))
+        user_id = request.headers.get('X-User-Id')
+    if not user_id:
+        user_id = session.get('user_id')
     
-    add_premium(user_id, 30)
-    logger.info(f"Премиум активирован для {user_id} через ЮKassa")
+    if user_id:
+        add_premium(user_id, 30)
+        logger.info(f"Премиум активирован для {user_id} через страницу успеха")
+    
     return '''
 <!DOCTYPE html>
 <html>
-<head><meta charset="UTF-8"><title>Оплата прошла</title><meta http-equiv="refresh" content="3;url=/"><style>body{background:#0f0c29;color:#fff;text-align:center;padding:50px;font-family:Arial}h1{color:#22c55e}</style></head>
-<body><h1>✅ Оплата прошла успешно!</h1><p>Ваша премиум-подписка активирована.</p><p>Через 3 секунды вы вернётесь на главную.</p><a href="/" style="color:#a855f7;">Вернуться сейчас</a></body>
-</html>'''
+<head>
+    <meta charset="UTF-8">
+    <title>Оплата прошла успешно</title>
+    <meta http-equiv="refresh" content="3;url=/">
+    <style>
+        body { font-family: Arial; text-align: center; padding: 50px; background: #0f0c29; color: white; }
+        h1 { color: #22c55e; }
+        .loader {
+            margin: 20px auto;
+            width: 40px;
+            height: 40px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #22c55e;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="loader"></div>
+    <h1>✅ Оплата прошла успешно!</h1>
+    <p>Ваша премиум-подписка активирована.</p>
+    <p>Через 3 секунды вы вернётесь на главную страницу.</p>
+    <a href="/" style="color: #a855f7;">Вернуться сейчас</a>
+</body>
+</html>
+    '''
 
 @app.route('/yookassa-webhook', methods=['POST'])
 def yookassa_webhook():
