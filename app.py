@@ -14,6 +14,9 @@ from threading import Thread
 from functools import wraps
 from yookassa import Configuration, Payment
 
+# Импортируем imageio-ffmpeg для встроенного FFmpeg
+import imageio_ffmpeg
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -21,6 +24,21 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'super-secret-key-2024-change-me')
+
+# Получаем путь к встроенному FFmpeg
+FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+logger.info(f"FFmpeg path: {FFMPEG_PATH}")
+
+# Функция для выполнения команд FFmpeg
+def run_ffmpeg(cmd):
+    """Заменяет 'ffmpeg' на путь к встроенному FFmpeg и выполняет команду"""
+    if cmd[0] == 'ffmpeg':
+        cmd[0] = FFMPEG_PATH
+    logger.info(f"Running FFmpeg command: {' '.join(cmd)}")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.error(f"FFmpeg error: {result.stderr}")
+    return result
 
 YOOKASSA_SHOP_ID = "1369767"
 YOOKASSA_SECRET_KEY = "test_92d73ZaVYlLk9i1BvEwS6p5tflhwj7PSqiutGHHtosY"
@@ -42,7 +60,6 @@ FILE_RETENTION_TIME = 1800
 
 SECRET_REQUISITES_KEY = "Bogdan2025Secure"
 
-# Цены на подписки
 PRICES = {
     'month': 50,
     'year': 650
@@ -92,18 +109,15 @@ def add_premium(user_id, days=30):
 
 def auto_edit_video(input_path, output_path, intensity='medium'):
     """
-    Автоматический монтаж видео:
-    - Удаляет тихие/скучные участки
-    - Оставляет самые динамичные моменты
-    intensity: 'short' (короткий), 'medium' (средний), 'long' (длинный)
+    Автоматический монтаж видео с использованием встроенного FFmpeg
     """
     try:
         # Настройки параметров для разных режимов
         settings = {
             'short': {
-                'silent_threshold': '-30dB',  # Громче порог для удаления
-                'min_silence': 0.3,           # Минимальная длина тишины
-                'target_duration': 30         # Целевая длительность (сек)
+                'silent_threshold': '-30dB',
+                'min_silence': 0.3,
+                'target_duration': 30
             },
             'medium': {
                 'silent_threshold': '-35dB',
@@ -119,37 +133,37 @@ def auto_edit_video(input_path, output_path, intensity='medium'):
         
         cfg = settings.get(intensity, settings['medium'])
         
-        # Создаём временный файл для аудио-анализа
-        audio_analysis = os.path.join(DOWNLOAD_FOLDER, f'analysis_{uuid.uuid4()}.txt')
+        # Получаем длительность видео
+        probe_cmd = [
+            'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1', input_path
+        ]
+        if probe_cmd[0] == 'ffprobe':
+            probe_cmd[0] = FFMPEG_PATH.replace('ffmpeg', 'ffprobe')
         
-        # 1. Анализируем аудио-дорожку для поиска "интересных" моментов
-        #    (используем silence detection)
-        cmd_analyze = [
+        result = subprocess.run(probe_cmd, capture_output=True, text=True)
+        total_duration = float(result.stdout.strip())
+        
+        # Анализируем аудио для поиска тихих участков
+        analyze_cmd = [
             'ffmpeg', '-i', input_path,
             '-af', f'silencedetect=n={cfg["silent_threshold"]}:d={cfg["min_silence"]}',
             '-f', 'null', '-'
         ]
-        
-        result = subprocess.run(cmd_analyze, capture_output=True, text=True, stderr=subprocess.PIPE)
-        output = result.stderr
+        analyze_result = run_ffmpeg(analyze_cmd)
+        output = analyze_result.stderr
         
         # Парсим временные метки тишины
-        import re
         silence_starts = re.findall(r'silence_start: ([\d.]+)', output)
         silence_ends = re.findall(r'silence_end: ([\d.]+)', output)
         
         if not silence_starts:
             # Если нет тихих моментов, просто копируем видео
-            subprocess.run(['ffmpeg', '-i', input_path, '-c', 'copy', output_path], check=True)
+            copy_cmd = ['ffmpeg', '-i', input_path, '-c', 'copy', output_path]
+            run_ffmpeg(copy_cmd)
             return True
         
         # Строим список сегментов для сохранения
-        total_duration = float(subprocess.run(
-            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-             '-of', 'default=noprint_wrappers=1:nokey=1', input_path],
-            capture_output=True, text=True
-        ).stdout.strip())
-        
         segments = []
         last_end = 0
         
@@ -167,15 +181,15 @@ def auto_edit_video(input_path, output_path, intensity='medium'):
             segments.append(f"between(t,{last_end},{total_duration})")
         
         if not segments:
-            # Если нечего вырезать, копируем
-            subprocess.run(['ffmpeg', '-i', input_path, '-c', 'copy', output_path], check=True)
+            copy_cmd = ['ffmpeg', '-i', input_path, '-c', 'copy', output_path]
+            run_ffmpeg(copy_cmd)
             return True
         
         # Создаём фильтр для вырезания тихих участков
         select_filter = f"select='+({'+'.join(segments)})',setpts=N/FRAME_RATE/TB"
         
         # Применяем фильтр
-        cmd_edit = [
+        edit_cmd = [
             'ffmpeg', '-i', input_path,
             '-vf', select_filter,
             '-af', select_filter,
@@ -185,12 +199,7 @@ def auto_edit_video(input_path, output_path, intensity='medium'):
             output_path
         ]
         
-        subprocess.run(cmd_edit, check=True, capture_output=True)
-        
-        # Очищаем временные файлы
-        if os.path.exists(audio_analysis):
-            os.remove(audio_analysis)
-        
+        run_ffmpeg(edit_cmd)
         return True
         
     except Exception as e:
@@ -346,69 +355,6 @@ def download_video(url, format_id='best'):
             return None, "Не удалось скачать видео"
     except Exception as e:
         return None, str(e)
-
-# ---------- АВТОМОНТАЖ ВИДЕО (ТОЛЬКО ДЛЯ PREMIUM) ----------
-@app.route('/api/auto-edit', methods=['POST'])
-@rate_limit(10, 60)
-def api_auto_edit():
-    try:
-        data = request.get_json()
-        url = data.get('url', '').strip()
-        intensity = data.get('intensity', 'medium')
-        format_id = data.get('format_id', 'best')
-        
-        if not url:
-            return jsonify({'error': 'URL не указан'}), 400
-        
-        user_id = request.cookies.get('videoSaveUserId')
-        if not user_id:
-            user_id = str(uuid.uuid4())
-        
-        # Проверка премиум-доступа
-        if not is_premium(user_id):
-            return jsonify({'error': 'Доступно только в Premium подписке! Оформите Premium за 50₽/месяц или 650₽/год'}), 403
-        
-        # Скачиваем видео
-        original_path, err = download_video(url, format_id)
-        if err:
-            return jsonify({'error': err}), 400
-        if not original_path or not os.path.exists(original_path):
-            return jsonify({'error': 'Не удалось скачать видео'}), 500
-        
-        # Создаём имя для отредактированного видео
-        edited_filename = f"edited_{uuid.uuid4()}.mp4"
-        edited_path = os.path.join(DOWNLOAD_FOLDER, edited_filename)
-        
-        # Выполняем автомонтаж
-        success = auto_edit_video(original_path, edited_path, intensity)
-        
-        # Удаляем оригинал (он уже обработан)
-        try:
-            if os.path.exists(original_path):
-                os.remove(original_path)
-        except:
-            pass
-        
-        if not success:
-            return jsonify({'error': 'Ошибка при обработке видео. Убедитесь, что на сервере установлен FFmpeg'}), 500
-        
-        if not os.path.exists(edited_path):
-            return jsonify({'error': 'Не удалось создать отредактированное видео'}), 500
-        
-        @after_this_request
-        def remove_edited(resp):
-            try:
-                if os.path.exists(edited_path):
-                    os.remove(edited_path)
-            except:
-                pass
-            return resp
-        
-        return send_file(edited_path, as_attachment=True, download_name='edited_video.mp4', mimetype='video/mp4')
-        
-    except Exception as e:
-        logger.error(f"Ошибка автомонтажа: {e}")
-        return jsonify({'error': str(e)}), 500
 
 # ---------- HTML ШАБЛОН ----------
 HTML_TEMPLATE = """
@@ -1107,6 +1053,63 @@ def api_download():
         
         return send_file(path, as_attachment=True, download_name='video.mp4')
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/auto-edit', methods=['POST'])
+@rate_limit(10, 60)
+def api_auto_edit():
+    try:
+        data = request.get_json()
+        url = data.get('url', '').strip()
+        intensity = data.get('intensity', 'medium')
+        format_id = data.get('format_id', 'best')
+        
+        if not url:
+            return jsonify({'error': 'URL не указан'}), 400
+        
+        user_id = request.cookies.get('videoSaveUserId')
+        if not user_id:
+            user_id = str(uuid.uuid4())
+        
+        if not is_premium(user_id):
+            return jsonify({'error': 'Доступно только в Premium подписке! Оформите Premium за 50₽/месяц или 650₽/год'}), 403
+        
+        original_path, err = download_video(url, format_id)
+        if err:
+            return jsonify({'error': err}), 400
+        if not original_path or not os.path.exists(original_path):
+            return jsonify({'error': 'Не удалось скачать видео'}), 500
+        
+        edited_filename = f"edited_{uuid.uuid4()}.mp4"
+        edited_path = os.path.join(DOWNLOAD_FOLDER, edited_filename)
+        
+        success = auto_edit_video(original_path, edited_path, intensity)
+        
+        try:
+            if os.path.exists(original_path):
+                os.remove(original_path)
+        except:
+            pass
+        
+        if not success:
+            return jsonify({'error': 'Ошибка при обработке видео'}), 500
+        
+        if not os.path.exists(edited_path):
+            return jsonify({'error': 'Не удалось создать отредактированное видео'}), 500
+        
+        @after_this_request
+        def remove_edited(resp):
+            try:
+                if os.path.exists(edited_path):
+                    os.remove(edited_path)
+            except:
+                pass
+            return resp
+        
+        return send_file(edited_path, as_attachment=True, download_name='auto_edited_video.mp4', mimetype='video/mp4')
+        
+    except Exception as e:
+        logger.error(f"Ошибка автомонтажа: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/create_yookassa_payment')

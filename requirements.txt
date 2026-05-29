@@ -17,3 +17,4 @@ Werkzeug==3.1.8
 wrapt==2.2.1
 yookassa==3.10.1
 yt-dlp==2026.5.16.233954.dev0
+imageio-ffmpeg
