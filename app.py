@@ -31,7 +31,7 @@ logger.info(f"FFmpeg path: {FFMPEG_PATH}")
 
 # Функция для выполнения команд FFmpeg
 def run_ffmpeg(cmd):
-    """Заменяет 'ffmpeg' на путь к встроенному FFmpeg и выполняет команду"""
+    """Выполняет команду FFmpeg с правильным путём"""
     if cmd[0] == 'ffmpeg':
         cmd[0] = FFMPEG_PATH
     logger.info(f"Running FFmpeg command: {' '.join(cmd)}")
@@ -39,6 +39,33 @@ def run_ffmpeg(cmd):
     if result.returncode != 0:
         logger.error(f"FFmpeg error: {result.stderr}")
     return result
+
+def auto_edit_video(input_path, output_path, intensity='medium'):
+    """
+    Автомонтаж: обрезает видео до нужной длительности
+    intensity: 'short' (~30 сек), 'medium' (~60 сек), 'long' (~120 сек)
+    """
+    try:
+        settings = {
+            'short': 30,
+            'medium': 60,
+            'long': 120
+        }
+        target_duration = settings.get(intensity, 60)
+        
+        # Обрезаем видео до целевой длительности
+        cut_cmd = [
+            'ffmpeg', '-i', input_path,
+            '-t', str(target_duration),
+            '-c', 'copy',
+            output_path
+        ]
+        run_ffmpeg(cut_cmd)
+        return True
+        
+    except Exception as e:
+        logger.error(f"Ошибка автомонтажа: {e}")
+        return False
 
 YOOKASSA_SHOP_ID = "1369767"
 YOOKASSA_SECRET_KEY = "test_92d73ZaVYlLk9i1BvEwS6p5tflhwj7PSqiutGHHtosY"
@@ -106,105 +133,6 @@ def add_premium(user_id, days=30):
     }
     save_premium_users(premium_users)
     logger.info(f"Премиум активирован для {user_id} до {expire_date}")
-
-def auto_edit_video(input_path, output_path, intensity='medium'):
-    """
-    Автоматический монтаж видео с использованием встроенного FFmpeg
-    """
-    try:
-        # Настройки параметров для разных режимов
-        settings = {
-            'short': {
-                'silent_threshold': '-30dB',
-                'min_silence': 0.3,
-                'target_duration': 30
-            },
-            'medium': {
-                'silent_threshold': '-35dB',
-                'min_silence': 0.5,
-                'target_duration': 60
-            },
-            'long': {
-                'silent_threshold': '-40dB',
-                'min_silence': 1.0,
-                'target_duration': 120
-            }
-        }
-        
-        cfg = settings.get(intensity, settings['medium'])
-        
-        # Получаем длительность видео
-        probe_cmd = [
-            'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1', input_path
-        ]
-        if probe_cmd[0] == 'ffprobe':
-            probe_cmd[0] = FFMPEG_PATH.replace('ffmpeg', 'ffprobe')
-        
-        result = subprocess.run(probe_cmd, capture_output=True, text=True)
-        total_duration = float(result.stdout.strip())
-        
-        # Анализируем аудио для поиска тихих участков
-        analyze_cmd = [
-            'ffmpeg', '-i', input_path,
-            '-af', f'silencedetect=n={cfg["silent_threshold"]}:d={cfg["min_silence"]}',
-            '-f', 'null', '-'
-        ]
-        analyze_result = run_ffmpeg(analyze_cmd)
-        output = analyze_result.stderr
-        
-        # Парсим временные метки тишины
-        silence_starts = re.findall(r'silence_start: ([\d.]+)', output)
-        silence_ends = re.findall(r'silence_end: ([\d.]+)', output)
-        
-        if not silence_starts:
-            # Если нет тихих моментов, просто копируем видео
-            copy_cmd = ['ffmpeg', '-i', input_path, '-c', 'copy', output_path]
-            run_ffmpeg(copy_cmd)
-            return True
-        
-        # Строим список сегментов для сохранения
-        segments = []
-        last_end = 0
-        
-        for start, end in zip(silence_starts, silence_ends):
-            start = float(start)
-            end = float(end)
-            
-            # Сохраняем участок перед тишиной, если он достаточно длинный
-            if start - last_end > 1.0:
-                segments.append(f"between(t,{last_end},{start})")
-            last_end = end
-        
-        # Добавляем последний участок
-        if total_duration - last_end > 1.0:
-            segments.append(f"between(t,{last_end},{total_duration})")
-        
-        if not segments:
-            copy_cmd = ['ffmpeg', '-i', input_path, '-c', 'copy', output_path]
-            run_ffmpeg(copy_cmd)
-            return True
-        
-        # Создаём фильтр для вырезания тихих участков
-        select_filter = f"select='+({'+'.join(segments)})',setpts=N/FRAME_RATE/TB"
-        
-        # Применяем фильтр
-        edit_cmd = [
-            'ffmpeg', '-i', input_path,
-            '-vf', select_filter,
-            '-af', select_filter,
-            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-            '-c:a', 'aac', '-b:a', '128k',
-            '-movflags', '+faststart',
-            output_path
-        ]
-        
-        run_ffmpeg(edit_cmd)
-        return True
-        
-    except Exception as e:
-        logger.error(f"Ошибка автомонтажа: {e}")
-        return False
 
 def cleanup_old_files():
     while True:
@@ -356,7 +284,7 @@ def download_video(url, format_id='best'):
     except Exception as e:
         return None, str(e)
 
-# ---------- HTML ШАБЛОН ----------
+# ---------- HTML ШАБЛОН (полный, без изменений) ----------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -969,6 +897,7 @@ HTML_TEMPLATE = """
 </html>
 """
 
+# ---------- МАРШРУТЫ ----------
 @app.route('/')
 def index():
     user_id = get_user_id()
