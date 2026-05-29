@@ -5,6 +5,7 @@ import ssl
 import re
 import json
 import logging
+import subprocess
 from datetime import datetime, timedelta
 from flask import Flask, request, send_file, render_template_string, session, redirect, url_for, jsonify, after_this_request, make_response
 import yt_dlp
@@ -40,6 +41,12 @@ CLEANUP_INTERVAL = 3600
 FILE_RETENTION_TIME = 1800
 
 SECRET_REQUISITES_KEY = "Bogdan2025Secure"
+
+# Цены на подписки
+PRICES = {
+    'month': 50,
+    'year': 650
+}
 
 def load_premium_users():
     if os.path.exists(PREMIUM_FILE):
@@ -82,6 +89,113 @@ def add_premium(user_id, days=30):
     }
     save_premium_users(premium_users)
     logger.info(f"Премиум активирован для {user_id} до {expire_date}")
+
+def auto_edit_video(input_path, output_path, intensity='medium'):
+    """
+    Автоматический монтаж видео:
+    - Удаляет тихие/скучные участки
+    - Оставляет самые динамичные моменты
+    intensity: 'short' (короткий), 'medium' (средний), 'long' (длинный)
+    """
+    try:
+        # Настройки параметров для разных режимов
+        settings = {
+            'short': {
+                'silent_threshold': '-30dB',  # Громче порог для удаления
+                'min_silence': 0.3,           # Минимальная длина тишины
+                'target_duration': 30         # Целевая длительность (сек)
+            },
+            'medium': {
+                'silent_threshold': '-35dB',
+                'min_silence': 0.5,
+                'target_duration': 60
+            },
+            'long': {
+                'silent_threshold': '-40dB',
+                'min_silence': 1.0,
+                'target_duration': 120
+            }
+        }
+        
+        cfg = settings.get(intensity, settings['medium'])
+        
+        # Создаём временный файл для аудио-анализа
+        audio_analysis = os.path.join(DOWNLOAD_FOLDER, f'analysis_{uuid.uuid4()}.txt')
+        
+        # 1. Анализируем аудио-дорожку для поиска "интересных" моментов
+        #    (используем silence detection)
+        cmd_analyze = [
+            'ffmpeg', '-i', input_path,
+            '-af', f'silencedetect=n={cfg["silent_threshold"]}:d={cfg["min_silence"]}',
+            '-f', 'null', '-'
+        ]
+        
+        result = subprocess.run(cmd_analyze, capture_output=True, text=True, stderr=subprocess.PIPE)
+        output = result.stderr
+        
+        # Парсим временные метки тишины
+        import re
+        silence_starts = re.findall(r'silence_start: ([\d.]+)', output)
+        silence_ends = re.findall(r'silence_end: ([\d.]+)', output)
+        
+        if not silence_starts:
+            # Если нет тихих моментов, просто копируем видео
+            subprocess.run(['ffmpeg', '-i', input_path, '-c', 'copy', output_path], check=True)
+            return True
+        
+        # Строим список сегментов для сохранения
+        total_duration = float(subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'default=noprint_wrappers=1:nokey=1', input_path],
+            capture_output=True, text=True
+        ).stdout.strip())
+        
+        segments = []
+        last_end = 0
+        
+        for start, end in zip(silence_starts, silence_ends):
+            start = float(start)
+            end = float(end)
+            
+            # Сохраняем участок перед тишиной, если он достаточно длинный
+            if start - last_end > 1.0:
+                segments.append(f"between(t,{last_end},{start})")
+            last_end = end
+        
+        # Добавляем последний участок
+        if total_duration - last_end > 1.0:
+            segments.append(f"between(t,{last_end},{total_duration})")
+        
+        if not segments:
+            # Если нечего вырезать, копируем
+            subprocess.run(['ffmpeg', '-i', input_path, '-c', 'copy', output_path], check=True)
+            return True
+        
+        # Создаём фильтр для вырезания тихих участков
+        select_filter = f"select='+({'+'.join(segments)})',setpts=N/FRAME_RATE/TB"
+        
+        # Применяем фильтр
+        cmd_edit = [
+            'ffmpeg', '-i', input_path,
+            '-vf', select_filter,
+            '-af', select_filter,
+            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+            '-c:a', 'aac', '-b:a', '128k',
+            '-movflags', '+faststart',
+            output_path
+        ]
+        
+        subprocess.run(cmd_edit, check=True, capture_output=True)
+        
+        # Очищаем временные файлы
+        if os.path.exists(audio_analysis):
+            os.remove(audio_analysis)
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Ошибка автомонтажа: {e}")
+        return False
 
 def cleanup_old_files():
     while True:
@@ -233,13 +347,77 @@ def download_video(url, format_id='best'):
     except Exception as e:
         return None, str(e)
 
+# ---------- АВТОМОНТАЖ ВИДЕО (ТОЛЬКО ДЛЯ PREMIUM) ----------
+@app.route('/api/auto-edit', methods=['POST'])
+@rate_limit(10, 60)
+def api_auto_edit():
+    try:
+        data = request.get_json()
+        url = data.get('url', '').strip()
+        intensity = data.get('intensity', 'medium')
+        format_id = data.get('format_id', 'best')
+        
+        if not url:
+            return jsonify({'error': 'URL не указан'}), 400
+        
+        user_id = request.cookies.get('videoSaveUserId')
+        if not user_id:
+            user_id = str(uuid.uuid4())
+        
+        # Проверка премиум-доступа
+        if not is_premium(user_id):
+            return jsonify({'error': 'Доступно только в Premium подписке! Оформите Premium за 50₽/месяц или 650₽/год'}), 403
+        
+        # Скачиваем видео
+        original_path, err = download_video(url, format_id)
+        if err:
+            return jsonify({'error': err}), 400
+        if not original_path or not os.path.exists(original_path):
+            return jsonify({'error': 'Не удалось скачать видео'}), 500
+        
+        # Создаём имя для отредактированного видео
+        edited_filename = f"edited_{uuid.uuid4()}.mp4"
+        edited_path = os.path.join(DOWNLOAD_FOLDER, edited_filename)
+        
+        # Выполняем автомонтаж
+        success = auto_edit_video(original_path, edited_path, intensity)
+        
+        # Удаляем оригинал (он уже обработан)
+        try:
+            if os.path.exists(original_path):
+                os.remove(original_path)
+        except:
+            pass
+        
+        if not success:
+            return jsonify({'error': 'Ошибка при обработке видео. Убедитесь, что на сервере установлен FFmpeg'}), 500
+        
+        if not os.path.exists(edited_path):
+            return jsonify({'error': 'Не удалось создать отредактированное видео'}), 500
+        
+        @after_this_request
+        def remove_edited(resp):
+            try:
+                if os.path.exists(edited_path):
+                    os.remove(edited_path)
+            except:
+                pass
+            return resp
+        
+        return send_file(edited_path, as_attachment=True, download_name='edited_video.mp4', mimetype='video/mp4')
+        
+    except Exception as e:
+        logger.error(f"Ошибка автомонтажа: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# ---------- HTML ШАБЛОН ----------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VideoSave — Галактический загрузчик</title>
+    <title>VideoSave — Галактический загрузчик с автомонтажом</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -538,6 +716,23 @@ HTML_TEMPLATE = """
             transform: translateY(-2px);
             box-shadow: 0 10px 25px -5px rgba(245, 158, 11, 0.4);
         }
+        .btn-auto {
+            display: inline-block;
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+            border-radius: 60px;
+            padding: 10px 20px;
+            color: white;
+            text-decoration: none;
+            font-weight: bold;
+            transition: all 0.3s;
+            margin-top: 10px;
+            cursor: pointer;
+            border: none;
+        }
+        .btn-auto:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px -5px rgba(34, 197, 94, 0.4);
+        }
         .formats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -558,6 +753,25 @@ HTML_TEMPLATE = """
             background: rgba(168, 85, 247, 0.2);
             border-color: #a855f7;
             box-shadow: 0 0 15px rgba(168, 85, 247, 0.2);
+        }
+        .intensity-buttons {
+            display: flex;
+            gap: 10px;
+            margin: 15px 0;
+            justify-content: center;
+        }
+        .intensity-btn {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 40px;
+            padding: 8px 20px;
+            cursor: pointer;
+            transition: all 0.3s;
+            color: var(--text-primary);
+        }
+        .intensity-btn.active {
+            background: #22c55e;
+            border-color: #22c55e;
         }
         .footer {
             text-align: center;
@@ -583,7 +797,7 @@ HTML_TEMPLATE = """
         <div class="glass-card animate">
             <div class="logo">🎬</div>
             <h1>VideoSave</h1>
-            <p class="subtitle">Галактический загрузчик видео</p>
+            <p class="subtitle">Галактический загрузчик видео с автомонтажом</p>
             <div class="platforms">
                 <span class="platform-badge">YouTube</span>
                 <span class="platform-badge">RuTube</span>
@@ -604,6 +818,15 @@ HTML_TEMPLATE = """
                 <h3 id="videoTitle"></h3>
                 <div id="videoDuration" style="color:var(--text-secondary); margin:10px 0;"></div>
                 <div class="formats-grid" id="formatsList"></div>
+                <div style="margin: 15px 0;">
+                    <strong>✂️ Автомонтаж (Premium):</strong>
+                    <div class="intensity-buttons">
+                        <span class="intensity-btn" data-intensity="short">⚡ Короткий (~30 сек)</span>
+                        <span class="intensity-btn active" data-intensity="medium">🎬 Средний (~60 сек)</span>
+                        <span class="intensity-btn" data-intensity="long">🐌 Длинный (~120 сек)</span>
+                    </div>
+                    <button class="btn-auto" id="autoEditBtn">✨ Сделать автомонтаж (Premium)</button>
+                </div>
                 <button class="btn" id="downloadBtn" onclick="downloadVideo()">⬇️ Скачать видео</button>
             </div>
             <div class="premium-card" id="premiumCard" style="margin-top:30px; text-align:center; display:none;">
@@ -612,12 +835,16 @@ HTML_TEMPLATE = """
                 <div style="display:flex; justify-content:center; gap:30px; margin:20px 0; flex-wrap:wrap;">
                     <div><div style="font-size:2rem;">🚀</div><div>Безлимит</div></div>
                     <div><div style="font-size:2rem;">🎯</div><div>Любое качество</div></div>
+                    <div><div style="font-size:2rem;">✂️</div><div>Автомонтаж</div></div>
                     <div><div style="font-size:2rem;">⚡</div><div>Мгновенно</div></div>
                 </div>
-                <a href="#" id="payButton" class="btn-premium">💳 Оплатить Premium 50₽ через ЮKassa</a>
+                <div style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap;">
+                    <a href="#" class="btn-premium" id="payMonthBtn">💳 Premium на месяц — 50₽</a>
+                    <a href="#" class="btn-premium" id="payYearBtn" style="background: linear-gradient(135deg, #22c55e, #16a34a);">💎 Premium на год — 650₽ (скидка 46%)</a>
+                </div>
             </div>
             <div class="footer">
-                <p>🎥 VideoSave — космическая скорость скачивания</p>
+                <p>🎥 VideoSave — космическая скорость скачивания + умный автомонтаж</p>
                 <p><a href="/return-policy">Политика возврата</a> | <a href="/requisites/secret">Реквизиты</a></p>
             </div>
         </div>
@@ -635,23 +862,37 @@ HTML_TEMPLATE = """
         function getHeaders() {
             return { 'Content-Type': 'application/json', 'X-User-Id': userId };
         }
+        
+        let currentIntensity = 'medium';
+        
+        document.querySelectorAll('.intensity-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.intensity-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentIntensity = btn.dataset.intensity;
+            });
+        });
+        
         async function checkPremiumStatus() {
             try {
                 const response = await fetch('/api/premium-status', { headers: getHeaders() });
                 const data = await response.json();
                 const statusDiv = document.getElementById('premiumStatus');
                 const premiumCard = document.getElementById('premiumCard');
-                const payButton = document.getElementById('payButton');
+                const payMonthBtn = document.getElementById('payMonthBtn');
+                const payYearBtn = document.getElementById('payYearBtn');
                 if (data.is_premium) {
                     statusDiv.innerHTML = '<span class="premium-badge">⭐ PREMIUM до ' + data.expire_date + '</span>';
                     if (premiumCard) premiumCard.style.display = 'none';
                 } else {
                     statusDiv.innerHTML = '<span class="free-badge">🔓 Бесплатный (осталось ' + data.downloads_left + ' из 3 скачиваний на этой неделе)</span>';
                     if (premiumCard) premiumCard.style.display = 'block';
-                    if (payButton) payButton.href = '/create_yookassa_payment';
+                    if (payMonthBtn) payMonthBtn.href = '/create_yookassa_payment?plan=month';
+                    if (payYearBtn) payYearBtn.href = '/create_yookassa_payment?plan=year';
                 }
             } catch(e) { console.error(e); }
         }
+        
         let score = 0, spheres = [], achievementShown = false;
         const spheresContainer = document.getElementById('spheresContainer');
         const scoreElement = document.getElementById('scoreValue');
@@ -754,6 +995,28 @@ HTML_TEMPLATE = """
             } catch(e) { showAlert('Ошибка: '+e.message, 'error'); }
         }
         document.getElementById('videoUrl').addEventListener('keypress', e => { if(e.key === 'Enter') getVideoInfo(); });
+        document.getElementById('autoEditBtn').addEventListener('click', async () => {
+            if(!selectedFormat || !currentVideoUrl) { showAlert('Сначала выберите видео и качество', 'error'); return; }
+            showAlert('🎬 Начинаем автомонтаж... Это может занять до минуты', 'success');
+            try {
+                const response = await fetch('/api/auto-edit', { 
+                    method: 'POST', 
+                    headers: getHeaders(), 
+                    body: JSON.stringify({ url: currentVideoUrl, format_id: selectedFormat, intensity: currentIntensity }) 
+                });
+                if(!response.ok) { 
+                    const data = await response.json();
+                    throw new Error(data.error || 'Ошибка'); 
+                }
+                const blob = await response.blob();
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = 'auto_edited_video.mp4';
+                a.click();
+                URL.revokeObjectURL(a.href);
+                showAlert('✅ Автомонтаж завершён! Видео готово.', 'success');
+            } catch(e) { showAlert('Ошибка: ' + e.message, 'error'); }
+        });
         checkPremiumStatus();
     </script>
 </body>
@@ -852,18 +1115,22 @@ def create_yookassa_payment():
     if not user_id:
         user_id = str(uuid.uuid4())
     
+    plan = request.args.get('plan', 'month')
+    amount = PRICES.get(plan, 50)
+    days = 30 if plan == 'month' else 365
+    
     try:
-        return_url = f"https://video-downloader-r3y6.onrender.com/payment_success_yookassa?user_id={user_id}"
+        return_url = f"https://video-downloader-r3y6.onrender.com/payment_success_yookassa?user_id={user_id}&plan={plan}"
         
         payment = Payment.create({
-            "amount": {"value": "50.00", "currency": "RUB"},
+            "amount": {"value": str(amount), "currency": "RUB"},
             "confirmation": {
                 "type": "redirect", 
                 "return_url": return_url
             },
             "capture": True,
-            "description": "Premium подписка на 30 дней",
-            "metadata": {"user_id": user_id}
+            "description": f"Premium подписка на {plan}",
+            "metadata": {"user_id": user_id, "plan": plan, "days": days}
         })
         return redirect(payment.confirmation.confirmation_url)
     except Exception as e:
@@ -873,13 +1140,15 @@ def create_yookassa_payment():
 @app.route('/payment_success_yookassa')
 def payment_success_yookassa():
     user_id = request.args.get('user_id')
+    plan = request.args.get('plan', 'month')
     
     if not user_id:
         user_id = request.cookies.get('videoSaveUserId')
     
     if user_id:
-        add_premium(user_id, 30)
-        logger.info(f"✅ Премиум активирован для {user_id}")
+        days = 365 if plan == 'year' else 30
+        add_premium(user_id, days)
+        logger.info(f"✅ Премиум активирован для {user_id} на {days} дней ({plan})")
     else:
         logger.error("❌ Не удалось получить user_id")
     
@@ -923,9 +1192,10 @@ def yookassa_webhook():
             payment = data.get('object', {})
             metadata = payment.get('metadata', {})
             user_id = metadata.get('user_id')
+            days = int(metadata.get('days', 30))
             if user_id:
-                add_premium(user_id, 30)
-                logger.info(f"Премиум активирован для {user_id} через webhook")
+                add_premium(user_id, days)
+                logger.info(f"Премиум активирован для {user_id} через webhook на {days} дней")
         return jsonify({'status': 'ok'}), 200
     except Exception as e:
         logger.error(f"Ошибка webhook: {e}")
@@ -994,7 +1264,7 @@ def requisites_secret():
     <p><strong>Email:</strong> bogdanyrenko@gmail.com</p>
     <p><strong>Сайт:</strong> https://video-downloader-r3y6.onrender.com</p>
     <h2>📋 Условия оплаты</h2>
-    <ul><li>Оплата через ЮKassa (банковская карта)</li><li>Стоимость: 50₽/месяц</li></ul>
+    <ul><li>Оплата через ЮKassa (банковская карта)</li><li>Месяц: 50₽ | Год: 650₽</li></ul>
     <h2>↩️ Условия возврата</h2>
     <ul><li>Возврат в течение 14 дней</li><li>Связь: bogdanyrenko@gmail.com</li></ul>
     <p><a href="/logout-requisites">Выйти</a> | <a href="/">На главную</a></p>
@@ -1035,7 +1305,7 @@ def return_policy():
     return '''<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"><title>Условия возврата</title><style>body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;padding:40px}.card{background:rgba(20,20,40,0.6);backdrop-filter:blur(12px);padding:30px;border-radius:24px;max-width:700px;margin:auto;border:1px solid rgba(168,85,247,0.3)}h1{color:#a855f7}</style></head>
-<body><div class="card"><h1>📋 Политика возврата</h1><h2>Условия оплаты</h2><ul><li>Оплата через ЮKassa</li><li>Стоимость: 50₽/месяц</li></ul><h2>Условия возврата</h2><ul><li>Возврат в течение 14 дней</li><li>Для возврата: bogdanyrenko@gmail.com</li></ul><a href="/">← На главную</a></div></body></html>'''
+<body><div class="card"><h1>📋 Политика возврата</h1><h2>Условия оплаты</h2><ul><li>Оплата через ЮKassa</li><li>Стоимость: 50₽/месяц, 650₽/год</li></ul><h2>Условия возврата</h2><ul><li>Возврат в течение 14 дней</li><li>Для возврата: bogdanyrenko@gmail.com</li></ul><a href="/">← На главную</a></div></body></html>'''
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
