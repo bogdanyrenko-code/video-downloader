@@ -29,9 +29,7 @@ app.secret_key = os.environ.get('SECRET_KEY', 'super-secret-key-2024-change-me')
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 logger.info(f"FFmpeg path: {FFMPEG_PATH}")
 
-# Функция для выполнения команд FFmpeg
 def run_ffmpeg(cmd):
-    """Выполняет команду FFmpeg с правильным путём"""
     if cmd[0] == 'ffmpeg':
         cmd[0] = FFMPEG_PATH
     logger.info(f"Running FFmpeg command: {' '.join(cmd)}")
@@ -40,27 +38,149 @@ def run_ffmpeg(cmd):
         logger.error(f"FFmpeg error: {result.stderr}")
     return result
 
+# ========== НОВЫЙ УМНЫЙ АВТОМОНТАЖ ==========
 def auto_edit_video(input_path, output_path, intensity='medium'):
     """
-    Автомонтаж: обрезает видео до нужной длительности
-    intensity: 'short' (~30 сек), 'medium' (~60 сек), 'long' (~120 сек)
+    Умный автомонтаж: находит динамичные сцены, вырезает тихие моменты,
+    склеивает самые интересные фрагменты
     """
     try:
         settings = {
-            'short': 30,
-            'medium': 60,
-            'long': 120
+            'short': {'max_duration': 30, 'scene_threshold': 0.4, 'silence_threshold': '-30dB'},
+            'medium': {'max_duration': 60, 'scene_threshold': 0.35, 'silence_threshold': '-35dB'},
+            'long': {'max_duration': 120, 'scene_threshold': 0.3, 'silence_threshold': '-40dB'}
         }
-        target_duration = settings.get(intensity, 60)
         
-        # Обрезаем видео до целевой длительности
-        cut_cmd = [
+        cfg = settings.get(intensity, settings['medium'])
+        
+        # Получаем длительность видео
+        probe_cmd = [
+            'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1', input_path
+        ]
+        if probe_cmd[0] == 'ffprobe':
+            probe_cmd[0] = FFMPEG_PATH.replace('ffmpeg', 'ffprobe')
+        
+        result = subprocess.run(probe_cmd, capture_output=True, text=True)
+        total_duration = float(result.stdout.strip())
+        
+        # Анализируем аудио для поиска тихих участков
+        analyze_cmd = [
             'ffmpeg', '-i', input_path,
-            '-t', str(target_duration),
-            '-c', 'copy',
+            '-af', f'silencedetect=n={cfg["silence_threshold"]}:d=0.5',
+            '-f', 'null', '-'
+        ]
+        analyze_result = run_ffmpeg(analyze_cmd)
+        output = analyze_result.stderr
+        
+        # Парсим тихие моменты
+        silence_starts = re.findall(r'silence_start: ([\d.]+)', output)
+        silence_ends = re.findall(r'silence_end: ([\d.]+)', output)
+        
+        # Анализируем сцены через scene detection
+        scene_file = os.path.join(os.path.dirname(input_path), f'scenes_{uuid.uuid4()}.txt')
+        scene_cmd = [
+            'ffmpeg', '-i', input_path,
+            '-vf', f'scene={cfg["scene_threshold"]},metadata=print:file={scene_file}',
+            '-f', 'null', '-'
+        ]
+        run_ffmpeg(scene_cmd)
+        
+        # Парсим смены сцен
+        scene_times = []
+        if os.path.exists(scene_file):
+            with open(scene_file, 'r') as f:
+                for line in f:
+                    match = re.search(r'pts_time:([\d.]+)', line)
+                    if match:
+                        scene_times.append(float(match.group(1)))
+            os.remove(scene_file)
+        
+        # Строим список интересных сегментов
+        interesting_segments = []
+        
+        # Добавляем сегменты на основе смены сцен (динамичные моменты)
+        for scene_time in scene_times:
+            start = max(0, scene_time - 2)
+            end = min(total_duration, scene_time + 3)
+            if end - start > 1:
+                interesting_segments.append((start, end))
+        
+        # Добавляем сегменты между тишиной
+        if silence_starts and silence_ends:
+            last_end = 0
+            for start, end in zip(silence_starts, silence_ends):
+                start = float(start)
+                end = float(end)
+                if start - last_end > 1:
+                    interesting_segments.append((last_end, start))
+                last_end = end
+            if total_duration - last_end > 1:
+                interesting_segments.append((last_end, total_duration))
+        
+        # Если нет интересных сегментов, берём всё видео
+        if not interesting_segments:
+            interesting_segments = [(0, min(total_duration, cfg['max_duration']))]
+        
+        # Сортируем по времени
+        interesting_segments.sort()
+        
+        # Объединяем пересекающиеся сегменты
+        merged = []
+        for start, end in interesting_segments:
+            if not merged:
+                merged.append([start, end])
+            else:
+                last = merged[-1]
+                if start <= last[1]:
+                    last[1] = max(last[1], end)
+                else:
+                    merged.append([start, end])
+        
+        # Ограничиваем суммарную длительность
+        total_interesting = sum(end - start for start, end in merged)
+        if total_interesting > cfg['max_duration']:
+            # Оставляем только самые длинные сегменты
+            merged.sort(key=lambda x: x[1] - x[0], reverse=True)
+            new_merged = []
+            current_duration = 0
+            for start, end in merged:
+                if current_duration + (end - start) <= cfg['max_duration']:
+                    new_merged.append((start, end))
+                    current_duration += (end - start)
+                else:
+                    remaining = cfg['max_duration'] - current_duration
+                    if remaining > 1:
+                        new_merged.append((start, start + remaining))
+                    break
+            merged = new_merged
+        
+        # Создаём фильтр для вырезания и склейки
+        if not merged:
+            cut_cmd = ['ffmpeg', '-i', input_path, '-c', 'copy', output_path]
+            run_ffmpeg(cut_cmd)
+            return True
+        
+        # Строим команду для склейки
+        filter_parts = []
+        for i, (start, end) in enumerate(merged):
+            filter_parts.append(f"[0:v]trim={start}:{end},setpts=PTS-STARTPTS[v{i}]")
+            filter_parts.append(f"[0:a]atrim={start}:{end},asetpts=PTS-STARTPTS[a{i}]")
+        
+        filter_concat = "".join([f"[v{i}][a{i}]" for i in range(len(merged))])
+        filter_cmd = ";".join(filter_parts) + f";{filter_concat}concat=n={len(merged)}:v=1:a=1[outv][outa]"
+        
+        concat_cmd = [
+            'ffmpeg', '-i', input_path,
+            '-filter_complex', filter_cmd,
+            '-map', '[outv]', '-map', '[outa]',
+            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+            '-c:a', 'aac', '-b:a', '128k',
+            '-movflags', '+faststart',
             output_path
         ]
-        run_ffmpeg(cut_cmd)
+        
+        run_ffmpeg(concat_cmd)
         return True
         
     except Exception as e:
@@ -83,7 +203,7 @@ MAX_FREE_DOWNLOADS_PER_WEEK = 3
 MAX_VIDEO_SIZE_FREE_MB = 200
 MAX_VIDEO_SIZE_PREMIUM_MB = 500
 CLEANUP_INTERVAL = 3600
-FILE_RETENTION_TIME = 1800
+FILE_RETENTION_TIME = 600
 
 SECRET_REQUISITES_KEY = "Bogdan2025Secure"
 
@@ -284,7 +404,7 @@ def download_video(url, format_id='best'):
     except Exception as e:
         return None, str(e)
 
-# ---------- HTML ШАБЛОН (полный, без изменений) ----------
+# ========== HTML ШАБЛОН ГЛАВНОЙ СТРАНИЦЫ ==========
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -594,14 +714,12 @@ HTML_TEMPLATE = """
             display: inline-block;
             background: linear-gradient(135deg, #22c55e, #16a34a);
             border-radius: 60px;
-            padding: 10px 20px;
+            padding: 12px 24px;
             color: white;
             text-decoration: none;
             font-weight: bold;
             transition: all 0.3s;
             margin-top: 10px;
-            cursor: pointer;
-            border: none;
         }
         .btn-auto:hover {
             transform: translateY(-2px);
@@ -627,25 +745,6 @@ HTML_TEMPLATE = """
             background: rgba(168, 85, 247, 0.2);
             border-color: #a855f7;
             box-shadow: 0 0 15px rgba(168, 85, 247, 0.2);
-        }
-        .intensity-buttons {
-            display: flex;
-            gap: 10px;
-            margin: 15px 0;
-            justify-content: center;
-        }
-        .intensity-btn {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 40px;
-            padding: 8px 20px;
-            cursor: pointer;
-            transition: all 0.3s;
-            color: var(--text-primary);
-        }
-        .intensity-btn.active {
-            background: #22c55e;
-            border-color: #22c55e;
         }
         .footer {
             text-align: center;
@@ -692,16 +791,10 @@ HTML_TEMPLATE = """
                 <h3 id="videoTitle"></h3>
                 <div id="videoDuration" style="color:var(--text-secondary); margin:10px 0;"></div>
                 <div class="formats-grid" id="formatsList"></div>
-                <div style="margin: 15px 0;">
-                    <strong>✂️ Автомонтаж (Premium):</strong>
-                    <div class="intensity-buttons">
-                        <span class="intensity-btn" data-intensity="short">⚡ Короткий (~30 сек)</span>
-                        <span class="intensity-btn active" data-intensity="medium">🎬 Средний (~60 сек)</span>
-                        <span class="intensity-btn" data-intensity="long">🐌 Длинный (~120 сек)</span>
-                    </div>
-                    <button class="btn-auto" id="autoEditBtn">✨ Сделать автомонтаж (Premium)</button>
+                <div style="margin: 15px 0; display: flex; gap: 15px; justify-content: center;">
+                    <button class="btn" id="downloadBtn" onclick="downloadVideo()">⬇️ Скачать видео</button>
+                    <a href="/auto-editor" class="btn-auto">🎬 Автомонтаж (Premium)</a>
                 </div>
-                <button class="btn" id="downloadBtn" onclick="downloadVideo()">⬇️ Скачать видео</button>
             </div>
             <div class="premium-card" id="premiumCard" style="margin-top:30px; text-align:center; display:none;">
                 <div style="font-size:2rem;">✨</div>
@@ -736,16 +829,6 @@ HTML_TEMPLATE = """
         function getHeaders() {
             return { 'Content-Type': 'application/json', 'X-User-Id': userId };
         }
-        
-        let currentIntensity = 'medium';
-        
-        document.querySelectorAll('.intensity-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('.intensity-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                currentIntensity = btn.dataset.intensity;
-            });
-        });
         
         async function checkPremiumStatus() {
             try {
@@ -869,41 +952,291 @@ HTML_TEMPLATE = """
             } catch(e) { showAlert('Ошибка: '+e.message, 'error'); }
         }
         document.getElementById('videoUrl').addEventListener('keypress', e => { if(e.key === 'Enter') getVideoInfo(); });
-        document.getElementById('autoEditBtn').addEventListener('click', async () => {
-            if(!selectedFormat || !currentVideoUrl) { showAlert('Сначала выберите видео и качество', 'error'); return; }
-            showAlert('🎬 Начинаем автомонтаж... Это может занять до минуты', 'success');
-            try {
-                const response = await fetch('/api/auto-edit', { 
-                    method: 'POST', 
-                    headers: getHeaders(), 
-                    body: JSON.stringify({ url: currentVideoUrl, format_id: selectedFormat, intensity: currentIntensity }) 
-                });
-                if(!response.ok) { 
-                    const data = await response.json();
-                    throw new Error(data.error || 'Ошибка'); 
-                }
-                const blob = await response.blob();
-                const a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = 'auto_edited_video.mp4';
-                a.click();
-                URL.revokeObjectURL(a.href);
-                showAlert('✅ Автомонтаж завершён! Видео готово.', 'success');
-            } catch(e) { showAlert('Ошибка: ' + e.message, 'error'); }
-        });
         checkPremiumStatus();
     </script>
 </body>
 </html>
 """
 
-# ---------- МАРШРУТЫ ----------
+# ========== НОВАЯ СТРАНИЦА АВТОМОНТАЖА ==========
+AUTO_EDITOR_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VideoSave — Умный автомонтаж видео</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg-gradient: radial-gradient(ellipse at 20% 30%, #1a1a2e, #0f0f1a);
+            --text-primary: #e0e0e0;
+            --text-secondary: #a0a0c0;
+            --card-bg: rgba(20, 20, 40, 0.55);
+            --card-border: rgba(168, 85, 247, 0.25);
+            --card-border-hover: rgba(168, 85, 247, 0.5);
+            --input-bg: rgba(0, 0, 0, 0.4);
+            --status-bg: rgba(0, 0, 0, 0.3);
+            --footer-border: rgba(255, 255, 255, 0.1);
+            --alert-error-bg: rgba(239, 68, 68, 0.15);
+            --alert-error-border: rgba(239, 68, 68, 0.4);
+            --alert-success-bg: rgba(34, 197, 94, 0.15);
+            --alert-success-border: rgba(34, 197, 94, 0.4);
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-gradient);
+            min-height: 100vh;
+            color: var(--text-primary);
+            overflow-x: hidden;
+            transition: background 0.4s ease, color 0.3s ease;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            position: relative;
+            z-index: 2;
+        }
+        .glass-card {
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            border-radius: 48px;
+            padding: 40px;
+            border: 1px solid var(--card-border);
+            box-shadow: 0 25px 45px -12px rgba(0, 0, 0, 0.4), 0 0 20px rgba(168, 85, 247, 0.05);
+            transition: all 0.4s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+        }
+        .glass-card:hover {
+            border-color: var(--card-border-hover);
+            transform: translateY(-4px);
+        }
+        h1 {
+            font-size: 2.5rem;
+            text-align: center;
+            background: linear-gradient(135deg, var(--text-primary), #a855f7, #7c3aed);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            text-align: center;
+            color: var(--text-secondary);
+            margin-bottom: 30px;
+        }
+        .url-input {
+            width: 100%;
+            padding: 16px 24px;
+            background: var(--input-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 60px;
+            font-size: 1rem;
+            color: var(--text-primary);
+            transition: all 0.3s;
+            margin-bottom: 20px;
+        }
+        .url-input:focus {
+            outline: none;
+            border-color: #a855f7;
+            box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15);
+        }
+        .btn {
+            width: 100%;
+            padding: 16px;
+            border: none;
+            border-radius: 60px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: linear-gradient(135deg, #a855f7, #7c3aed);
+            color: white;
+            position: relative;
+            overflow: hidden;
+        }
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+            transition: left 0.5s;
+        }
+        .btn:hover::before { left: 100%; }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px -5px rgba(168, 85, 247, 0.4);
+        }
+        .intensity-buttons {
+            display: flex;
+            gap: 15px;
+            margin: 20px 0;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .intensity-btn {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 40px;
+            padding: 10px 24px;
+            cursor: pointer;
+            transition: all 0.3s;
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+        .intensity-btn.active {
+            background: #22c55e;
+            border-color: #22c55e;
+        }
+        .loader {
+            display: none;
+            text-align: center;
+            padding: 40px;
+        }
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid rgba(168, 85, 247, 0.2);
+            border-top: 4px solid #a855f7;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+        .alert {
+            padding: 14px;
+            border-radius: 20px;
+            margin-bottom: 20px;
+        }
+        .alert-error {
+            background: var(--alert-error-bg);
+            border: 1px solid var(--alert-error-border);
+            color: #fca5a5;
+        }
+        .alert-success {
+            background: var(--alert-success-bg);
+            border: 1px solid var(--alert-success-border);
+            color: #86efac;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid var(--footer-border);
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+        .footer a { color: #a855f7; text-decoration: none; }
+        @media (max-width: 600px) {
+            .glass-card { padding: 24px; }
+            h1 { font-size: 1.8rem; }
+            .intensity-btn { padding: 8px 16px; font-size: 0.9rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="glass-card">
+            <h1>🎬 Умный автомонтаж видео</h1>
+            <p class="subtitle">ИИ-анализ найдет самые интересные моменты и смонтирует клип</p>
+            
+            <div id="alertContainer"></div>
+            
+            <input type="text" id="videoUrl" class="url-input" placeholder="Вставьте ссылку на видео (YouTube, RuTube, VK)..." autocomplete="off">
+            
+            <div class="intensity-buttons">
+                <span class="intensity-btn" data-intensity="short">⚡ Короткий (~30 сек)</span>
+                <span class="intensity-btn active" data-intensity="medium">🎬 Средний (~60 сек)</span>
+                <span class="intensity-btn" data-intensity="long">🐌 Длинный (~120 сек)</span>
+            </div>
+            
+            <button class="btn" id="autoEditBtn">✨ Сделать умный автомонтаж (Premium)</button>
+            
+            <div class="loader" id="loader">
+                <div class="spinner"></div>
+                <p>Анализируем видео и ищем интересные моменты...<br>Это может занять до минуты</p>
+            </div>
+            
+            <div class="footer">
+                <p>🎥 Автомонтаж доступен только для Premium-пользователей</p>
+                <p><a href="/">← Вернуться на главную</a></p>
+            </div>
+        </div>
+    </div>
+    <script>
+        let userId = localStorage.getItem('videoSaveUserId');
+        if (!userId) {
+            userId = crypto.randomUUID ? crypto.randomUUID() : 'user_' + Date.now() + '_' + Math.random().toString(36);
+            localStorage.setItem('videoSaveUserId', userId);
+        }
+        
+        let currentIntensity = 'medium';
+        
+        document.querySelectorAll('.intensity-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.intensity-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentIntensity = btn.dataset.intensity;
+            });
+        });
+        
+        function showAlert(msg, type) {
+            const container = document.getElementById('alertContainer');
+            container.innerHTML = `<div class="alert alert-${type}">${msg}</div>`;
+            setTimeout(() => container.innerHTML = '', 5000);
+        }
+        
+        document.getElementById('autoEditBtn').addEventListener('click', async () => {
+            const url = document.getElementById('videoUrl').value.trim();
+            if (!url) { showAlert('Вставьте ссылку на видео', 'error'); return; }
+            
+            showAlert('🎬 Начинаем умный автомонтаж... Анализируем видео', 'success');
+            document.getElementById('loader').style.display = 'block';
+            
+            try {
+                const response = await fetch('/api/auto-edit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-User-Id': userId },
+                    body: JSON.stringify({ url: url, intensity: currentIntensity, format_id: 'best' })
+                });
+                
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'Ошибка');
+                }
+                
+                const blob = await response.blob();
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = 'auto_edited_video.mp4';
+                a.click();
+                URL.revokeObjectURL(a.href);
+                showAlert('✅ Автомонтаж завершён! Видео готово к скачиванию.', 'success');
+            } catch (e) {
+                showAlert('Ошибка: ' + e.message, 'error');
+            } finally {
+                document.getElementById('loader').style.display = 'none';
+            }
+        });
+    </script>
+</body>
+</html>
+"""
+
 @app.route('/')
 def index():
     user_id = get_user_id()
     resp = make_response(render_template_string(HTML_TEMPLATE))
     set_user_id_cookie(resp, user_id)
     return resp
+
+@app.route('/auto-editor')
+def auto_editor():
+    return render_template_string(AUTO_EDITOR_TEMPLATE)
 
 @app.route('/api/premium-status')
 def api_premium_status():
@@ -1240,4 +1573,4 @@ def return_policy():
 <body><div class="card"><h1>📋 Политика возврата</h1><h2>Условия оплаты</h2><ul><li>Оплата через ЮKassa</li><li>Стоимость: 50₽/месяц, 650₽/год</li></ul><h2>Условия возврата</h2><ul><li>Возврат в течение 14 дней</li><li>Для возврата: bogdanyrenko@gmail.com</li></ul><a href="/">← На главную</a></div></body></html>'''
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    pass
