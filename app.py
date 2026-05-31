@@ -5,7 +5,7 @@ import ssl
 import re
 import json
 import logging
-import subprocess
+import zipfile
 from datetime import datetime, timedelta
 from flask import Flask, request, send_file, render_template_string, session, redirect, url_for, jsonify, after_this_request, make_response
 import yt_dlp
@@ -14,9 +14,6 @@ from threading import Thread
 from functools import wraps
 from yookassa import Configuration, Payment
 
-# Импортируем imageio-ffmpeg для встроенного FFmpeg
-import imageio_ffmpeg
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -24,168 +21,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'super-secret-key-2024-change-me')
-
-# Получаем путь к встроенному FFmpeg
-FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
-logger.info(f"FFmpeg path: {FFMPEG_PATH}")
-
-def run_ffmpeg(cmd):
-    if cmd[0] == 'ffmpeg':
-        cmd[0] = FFMPEG_PATH
-    logger.info(f"Running FFmpeg command: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error(f"FFmpeg error: {result.stderr}")
-    return result
-
-# ========== НОВЫЙ УМНЫЙ АВТОМОНТАЖ ==========
-def auto_edit_video(input_path, output_path, intensity='medium'):
-    """
-    Умный автомонтаж: находит динамичные сцены, вырезает тихие моменты,
-    склеивает самые интересные фрагменты
-    """
-    try:
-        settings = {
-            'short': {'max_duration': 30, 'scene_threshold': 0.4, 'silence_threshold': '-30dB'},
-            'medium': {'max_duration': 60, 'scene_threshold': 0.35, 'silence_threshold': '-35dB'},
-            'long': {'max_duration': 120, 'scene_threshold': 0.3, 'silence_threshold': '-40dB'}
-        }
-        
-        cfg = settings.get(intensity, settings['medium'])
-        
-        # Получаем длительность видео
-        probe_cmd = [
-            'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1', input_path
-        ]
-        if probe_cmd[0] == 'ffprobe':
-            probe_cmd[0] = FFMPEG_PATH.replace('ffmpeg', 'ffprobe')
-        
-        result = subprocess.run(probe_cmd, capture_output=True, text=True)
-        total_duration = float(result.stdout.strip())
-        
-        # Анализируем аудио для поиска тихих участков
-        analyze_cmd = [
-            'ffmpeg', '-i', input_path,
-            '-af', f'silencedetect=n={cfg["silence_threshold"]}:d=0.5',
-            '-f', 'null', '-'
-        ]
-        analyze_result = run_ffmpeg(analyze_cmd)
-        output = analyze_result.stderr
-        
-        # Парсим тихие моменты
-        silence_starts = re.findall(r'silence_start: ([\d.]+)', output)
-        silence_ends = re.findall(r'silence_end: ([\d.]+)', output)
-        
-        # Анализируем сцены через scene detection
-        scene_file = os.path.join(os.path.dirname(input_path), f'scenes_{uuid.uuid4()}.txt')
-        scene_cmd = [
-            'ffmpeg', '-i', input_path,
-            '-vf', f'scene={cfg["scene_threshold"]},metadata=print:file={scene_file}',
-            '-f', 'null', '-'
-        ]
-        run_ffmpeg(scene_cmd)
-        
-        # Парсим смены сцен
-        scene_times = []
-        if os.path.exists(scene_file):
-            with open(scene_file, 'r') as f:
-                for line in f:
-                    match = re.search(r'pts_time:([\d.]+)', line)
-                    if match:
-                        scene_times.append(float(match.group(1)))
-            os.remove(scene_file)
-        
-        # Строим список интересных сегментов
-        interesting_segments = []
-        
-        # Добавляем сегменты на основе смены сцен (динамичные моменты)
-        for scene_time in scene_times:
-            start = max(0, scene_time - 2)
-            end = min(total_duration, scene_time + 3)
-            if end - start > 1:
-                interesting_segments.append((start, end))
-        
-        # Добавляем сегменты между тишиной
-        if silence_starts and silence_ends:
-            last_end = 0
-            for start, end in zip(silence_starts, silence_ends):
-                start = float(start)
-                end = float(end)
-                if start - last_end > 1:
-                    interesting_segments.append((last_end, start))
-                last_end = end
-            if total_duration - last_end > 1:
-                interesting_segments.append((last_end, total_duration))
-        
-        # Если нет интересных сегментов, берём всё видео
-        if not interesting_segments:
-            interesting_segments = [(0, min(total_duration, cfg['max_duration']))]
-        
-        # Сортируем по времени
-        interesting_segments.sort()
-        
-        # Объединяем пересекающиеся сегменты
-        merged = []
-        for start, end in interesting_segments:
-            if not merged:
-                merged.append([start, end])
-            else:
-                last = merged[-1]
-                if start <= last[1]:
-                    last[1] = max(last[1], end)
-                else:
-                    merged.append([start, end])
-        
-        # Ограничиваем суммарную длительность
-        total_interesting = sum(end - start for start, end in merged)
-        if total_interesting > cfg['max_duration']:
-            # Оставляем только самые длинные сегменты
-            merged.sort(key=lambda x: x[1] - x[0], reverse=True)
-            new_merged = []
-            current_duration = 0
-            for start, end in merged:
-                if current_duration + (end - start) <= cfg['max_duration']:
-                    new_merged.append((start, end))
-                    current_duration += (end - start)
-                else:
-                    remaining = cfg['max_duration'] - current_duration
-                    if remaining > 1:
-                        new_merged.append((start, start + remaining))
-                    break
-            merged = new_merged
-        
-        # Создаём фильтр для вырезания и склейки
-        if not merged:
-            cut_cmd = ['ffmpeg', '-i', input_path, '-c', 'copy', output_path]
-            run_ffmpeg(cut_cmd)
-            return True
-        
-        # Строим команду для склейки
-        filter_parts = []
-        for i, (start, end) in enumerate(merged):
-            filter_parts.append(f"[0:v]trim={start}:{end},setpts=PTS-STARTPTS[v{i}]")
-            filter_parts.append(f"[0:a]atrim={start}:{end},asetpts=PTS-STARTPTS[a{i}]")
-        
-        filter_concat = "".join([f"[v{i}][a{i}]" for i in range(len(merged))])
-        filter_cmd = ";".join(filter_parts) + f";{filter_concat}concat=n={len(merged)}:v=1:a=1[outv][outa]"
-        
-        concat_cmd = [
-            'ffmpeg', '-i', input_path,
-            '-filter_complex', filter_cmd,
-            '-map', '[outv]', '-map', '[outa]',
-            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-            '-c:a', 'aac', '-b:a', '128k',
-            '-movflags', '+faststart',
-            output_path
-        ]
-        
-        run_ffmpeg(concat_cmd)
-        return True
-        
-    except Exception as e:
-        logger.error(f"Ошибка автомонтажа: {e}")
-        return False
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500 MB max
 
 YOOKASSA_SHOP_ID = "1369767"
 YOOKASSA_SECRET_KEY = "test_92d73ZaVYlLk9i1BvEwS6p5tflhwj7PSqiutGHHtosY"
@@ -200,6 +36,7 @@ DOWNLOAD_STATS = {}
 USER_SESSIONS = {}
 
 MAX_FREE_DOWNLOADS_PER_WEEK = 3
+MAX_FREE_QUALITY = 720
 MAX_VIDEO_SIZE_FREE_MB = 200
 MAX_VIDEO_SIZE_PREMIUM_MB = 500
 CLEANUP_INTERVAL = 3600
@@ -354,6 +191,97 @@ def get_rutube_video_info(url):
     except Exception as e:
         return None, str(e)
 
+def get_playlist_info(url):
+    """Получает информацию о плейлисте YouTube"""
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': True,
+        'ignoreerrors': True,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if 'entries' in info:
+                videos = []
+                for entry in info['entries']:
+                    if entry:
+                        videos.append({
+                            'id': entry.get('id'),
+                            'title': entry.get('title', 'Без названия'),
+                            'duration': entry.get('duration', 0),
+                            'url': f"https://youtube.com/watch?v={entry.get('id')}"
+                        })
+                return {
+                    'title': info.get('title', 'Плейлист'),
+                    'count': len(videos),
+                    'videos': videos
+                }, None
+            return None, "Не удалось распознать плейлист"
+    except Exception as e:
+        return None, str(e)
+
+def download_playlist(url, selected_videos, output_dir):
+    """Скачивает выбранные видео из плейлиста и упаковывает в ZIP"""
+    downloaded_files = []
+    
+    ydl_opts = {
+        'outtmpl': os.path.join(output_dir, '%(title)s.%(ext)s'),
+        'quiet': True,
+        'no_warnings': True,
+        'ignoreerrors': True,
+        'format': 'best[height<=720]',
+    }
+    
+    for video_url in selected_videos:
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=True)
+                filename = ydl.prepare_filename(info)
+                if os.path.exists(filename):
+                    downloaded_files.append(filename)
+                else:
+                    # Пробуем с другим расширением
+                    for ext in ['.mp4', '.webm', '.mkv']:
+                        test_path = filename.replace('.mp4', ext) if '.mp4' in filename else filename + ext
+                        if os.path.exists(test_path):
+                            downloaded_files.append(test_path)
+                            break
+        except Exception as e:
+            logger.error(f"Ошибка скачивания {video_url}: {e}")
+    
+    if not downloaded_files:
+        return None, "Не удалось скачать ни одного видео"
+    
+    # Создаём ZIP-архив
+    zip_path = os.path.join(output_dir, f"playlist_{uuid.uuid4()}.zip")
+    with zipfile.ZipFile(zip_path, 'w') as zipf:
+        for file in downloaded_files:
+            zipf.write(file, os.path.basename(file))
+            os.remove(file)  # Удаляем исходный файл после добавления в архив
+    
+    return zip_path, None
+
+def convert_to_mp3(input_path, output_path):
+    """Конвертирует видео в MP3 с тегами"""
+    try:
+        # Получаем название видео для тегов
+        title = os.path.splitext(os.path.basename(input_path))[0]
+        
+        cmd = [
+            'ffmpeg', '-i', input_path,
+            '-vn', '-acodec', 'libmp3lame', '-ab', '192k',
+            '-metadata', f'title={title}',
+            '-metadata', 'artist=VideoSave',
+            '-id3v2_version', '3',
+            output_path
+        ]
+        subprocess.run(cmd, capture_output=True, text=True)
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка конвертации в MP3: {e}")
+        return False
+
 def get_video_info(url):
     if 'rutube.ru' in url:
         return get_rutube_video_info(url)
@@ -381,7 +309,7 @@ def get_video_info(url):
                                 'filesize_mb': filesize_mb
                             })
                             seen_resolutions.add(res_str)
-            return {'title': info.get('title', 'Видео'), 'thumbnail': info.get('thumbnail', ''), 'duration': info.get('duration', 0), 'formats': sorted(formats, key=lambda x: int(x['resolution'].replace('p', '')), reverse=True)}, None
+            return {'title': info.get('title', 'Видео'), 'thumbnail': info.get('thumbnail', ''), 'duration': info.get('duration', 0), 'formats': sorted(formats, key=lambda x: int(x['resolution'].replace('p', '')), reverse=True), 'is_playlist': False}, None
     except Exception as e:
         return None, str(e)
 
@@ -399,19 +327,28 @@ def download_video(url, format_id='best'):
                 if size_mb > max_size:
                     os.remove(filename)
                     return None, f"Файл слишком большой ({size_mb:.1f} МБ). Максимум: {max_size} МБ"
+                
+                if not is_premium(user_id):
+                    resolution_match = re.search(r'(\d+)p', format_id)
+                    if resolution_match:
+                        resolution = int(resolution_match.group(1))
+                        if resolution > MAX_FREE_QUALITY:
+                            os.remove(filename)
+                            return None, f"Качество {resolution}p доступно только в Premium. Оформите подписку за 50₽/месяц"
+                
                 return filename, None
             return None, "Не удалось скачать видео"
     except Exception as e:
         return None, str(e)
 
-# ========== HTML ШАБЛОН ГЛАВНОЙ СТРАНИЦЫ ==========
+# ========== HTML ШАБЛОН ==========
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VideoSave — Галактический загрузчик с автомонтажом</title>
+    <title>VideoSave — Скачивай видео без рекламы</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -671,6 +608,11 @@ HTML_TEMPLATE = """
             transition: all 0.3s;
             margin-bottom: 20px;
         }
+        .url-input:focus {
+            outline: none;
+            border-color: #a855f7;
+            box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15);
+        }
         .btn {
             width: 100%;
             padding: 16px;
@@ -696,6 +638,10 @@ HTML_TEMPLATE = """
             transition: left 0.5s;
         }
         .btn:hover::before { left: 100%; }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px -5px rgba(168, 85, 247, 0.4);
+        }
         .btn-premium {
             display: inline-block;
             background: linear-gradient(135deg, #f59e0b, #d97706);
@@ -710,18 +656,19 @@ HTML_TEMPLATE = """
             transform: translateY(-2px);
             box-shadow: 0 10px 25px -5px rgba(245, 158, 11, 0.4);
         }
-        .btn-auto {
+        .btn-mp3 {
             display: inline-block;
             background: linear-gradient(135deg, #22c55e, #16a34a);
             border-radius: 60px;
-            padding: 12px 24px;
+            padding: 8px 16px;
             color: white;
             text-decoration: none;
             font-weight: bold;
             transition: all 0.3s;
-            margin-top: 10px;
+            font-size: 0.8rem;
+            margin-top: 5px;
         }
-        .btn-auto:hover {
+        .btn-mp3:hover {
             transform: translateY(-2px);
             box-shadow: 0 10px 25px -5px rgba(34, 197, 94, 0.4);
         }
@@ -746,6 +693,73 @@ HTML_TEMPLATE = """
             border-color: #a855f7;
             box-shadow: 0 0 15px rgba(168, 85, 247, 0.2);
         }
+        .format-card.premium-locked {
+            opacity: 0.5;
+            cursor: not-allowed;
+            position: relative;
+        }
+        .format-card.premium-locked::after {
+            content: '🔒';
+            position: absolute;
+            top: 5px;
+            right: 10px;
+            font-size: 12px;
+        }
+        .playlist-panel {
+            display: none;
+            margin-top: 20px;
+            padding: 20px;
+            background: var(--card-bg);
+            border-radius: 20px;
+            border: 1px solid var(--card-border);
+        }
+        .playlist-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .playlist-videos {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .playlist-video-item {
+            display: flex;
+            align-items: center;
+            padding: 8px;
+            border-bottom: 1px solid var(--card-border);
+            gap: 10px;
+        }
+        .playlist-video-item input {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+        .playlist-video-item label {
+            flex: 1;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+        .playlist-video-item .duration {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+        .btn-download-playlist {
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            padding: 12px 24px;
+            border-radius: 60px;
+            border: none;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .btn-download-playlist:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px -5px rgba(245, 158, 11, 0.4);
+        }
         .footer {
             text-align: center;
             margin-top: 30px;
@@ -759,6 +773,7 @@ HTML_TEMPLATE = """
             h1 { font-size: 2rem; }
             .score-board { top: 10px; right: 60px; font-size: 1rem; }
             .achievement { font-size: 2rem; padding: 15px 30px; }
+            .playlist-header { flex-direction: column; align-items: stretch; }
         }
     </style>
 </head>
@@ -770,7 +785,7 @@ HTML_TEMPLATE = """
         <div class="glass-card animate">
             <div class="logo">🎬</div>
             <h1>VideoSave</h1>
-            <p class="subtitle">Галактический загрузчик видео с автомонтажом</p>
+            <p class="subtitle">Галактический загрузчик видео</p>
             <div class="platforms">
                 <span class="platform-badge">YouTube</span>
                 <span class="platform-badge">RuTube</span>
@@ -783,7 +798,7 @@ HTML_TEMPLATE = """
                 <span id="premiumStatus">🔍 Загрузка...</span>
             </div>
             <div id="alertContainer"></div>
-            <input type="text" id="videoUrl" class="url-input" placeholder="Вставьте ссылку на видео...">
+            <input type="text" id="videoUrl" class="url-input" placeholder="Вставьте ссылку на видео или плейлист YouTube...">
             <button class="btn" onclick="getVideoInfo()">🎯 Получить информацию</button>
             <div class="loader" id="loader" style="display:none; text-align:center; padding:20px;"><div class="spinner" style="width:40px;height:40px;border:3px solid rgba(168,85,247,0.2);border-top-color:#a855f7;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto;"></div><p>Обработка...</p></div>
             <div class="video-info" id="videoInfo" style="display:none; margin-top:30px;">
@@ -791,19 +806,26 @@ HTML_TEMPLATE = """
                 <h3 id="videoTitle"></h3>
                 <div id="videoDuration" style="color:var(--text-secondary); margin:10px 0;"></div>
                 <div class="formats-grid" id="formatsList"></div>
-                <div style="margin: 15px 0; display: flex; gap: 15px; justify-content: center;">
+                <div style="margin-top: 15px;">
                     <button class="btn" id="downloadBtn" onclick="downloadVideo()">⬇️ Скачать видео</button>
-                    <a href="/auto-editor" class="btn-auto">🎬 Автомонтаж (Premium)</a>
+                    <button class="btn-mp3" id="downloadMp3Btn" onclick="downloadMp3()" style="display: none;">🎵 Скачать MP3 (Premium)</button>
                 </div>
+            </div>
+            <div class="playlist-panel" id="playlistPanel">
+                <div class="playlist-header">
+                    <h3>📋 Содержимое плейлиста</h3>
+                    <button class="btn-download-playlist" id="downloadPlaylistBtn">⬇️ Скачать выбранное (Premium)</button>
+                </div>
+                <div class="playlist-videos" id="playlistVideos"></div>
             </div>
             <div class="premium-card" id="premiumCard" style="margin-top:30px; text-align:center; display:none;">
                 <div style="font-size:2rem;">✨</div>
                 <h3>Премиум возможности</h3>
                 <div style="display:flex; justify-content:center; gap:30px; margin:20px 0; flex-wrap:wrap;">
                     <div><div style="font-size:2rem;">🚀</div><div>Безлимит</div></div>
-                    <div><div style="font-size:2rem;">🎯</div><div>Любое качество</div></div>
-                    <div><div style="font-size:2rem;">✂️</div><div>Автомонтаж</div></div>
-                    <div><div style="font-size:2rem;">⚡</div><div>Мгновенно</div></div>
+                    <div><div style="font-size:2rem;">🎯</div><div>4K качество</div></div>
+                    <div><div style="font-size:2rem;">📁</div><div>Скачивание плейлистов</div></div>
+                    <div><div style="font-size:2rem;">🎵</div><div>Конвертация в MP3</div></div>
                 </div>
                 <div style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap;">
                     <a href="#" class="btn-premium" id="payMonthBtn">💳 Premium на месяц — 50₽</a>
@@ -811,7 +833,7 @@ HTML_TEMPLATE = """
                 </div>
             </div>
             <div class="footer">
-                <p>🎥 VideoSave — космическая скорость скачивания + умный автомонтаж</p>
+                <p>🎥 VideoSave — скачивай видео без рекламы и ограничений</p>
                 <p><a href="/return-policy">Политика возврата</a> | <a href="/requisites/secret">Реквизиты</a></p>
             </div>
         </div>
@@ -826,6 +848,12 @@ HTML_TEMPLATE = """
             userId = crypto.randomUUID ? crypto.randomUUID() : 'user_' + Date.now() + '_' + Math.random().toString(36);
             localStorage.setItem('videoSaveUserId', userId);
         }
+        let currentVideoUrl = null;
+        let currentVideoInfo = null;
+        let currentPlaylist = null;
+        let selectedFormat = null;
+        let isPremiumUser = false;
+        
         function getHeaders() {
             return { 'Content-Type': 'application/json', 'X-User-Id': userId };
         }
@@ -834,6 +862,7 @@ HTML_TEMPLATE = """
             try {
                 const response = await fetch('/api/premium-status', { headers: getHeaders() });
                 const data = await response.json();
+                isPremiumUser = data.is_premium;
                 const statusDiv = document.getElementById('premiumStatus');
                 const premiumCard = document.getElementById('premiumCard');
                 const payMonthBtn = document.getElementById('payMonthBtn');
@@ -903,39 +932,76 @@ HTML_TEMPLATE = """
         }
         (localStorage.getItem('theme') === 'light') ? setTheme('light') : setTheme('dark');
         themeToggle.addEventListener('click', () => body.classList.contains('light') ? setTheme('dark') : setTheme('light'));
-        let selectedFormat = null, currentVideoUrl = null;
+        
         function showAlert(msg, type) {
             const container = document.getElementById('alertContainer');
             container.innerHTML = `<div class="alert alert-${type}" style="padding:12px; border-radius:20px; margin-bottom:20px; background:${type==='error'?'rgba(239,68,68,0.15)':'rgba(34,197,94,0.15)'}">${msg}</div>`;
             setTimeout(() => container.innerHTML = '', 5000);
         }
+        
         async function getVideoInfo() {
             const url = document.getElementById('videoUrl').value.trim();
             if(!url) { showAlert('Введите ссылку', 'error'); return; }
             currentVideoUrl = url;
             document.getElementById('loader').style.display = 'block';
             document.getElementById('videoInfo').style.display = 'none';
+            document.getElementById('playlistPanel').style.display = 'none';
             try {
                 const response = await fetch('/api/video-info', { method: 'POST', headers: getHeaders(), body: JSON.stringify({ url }) });
                 const data = await response.json();
                 document.getElementById('loader').style.display = 'none';
                 if(data.error) { showAlert(data.error, 'error'); return; }
-                document.getElementById('videoThumbnail').src = data.thumbnail || '';
-                document.getElementById('videoTitle').innerText = data.title;
-                if(data.duration) document.getElementById('videoDuration').innerHTML = `⏱️ Длительность: ${Math.floor(data.duration/60)}:${(data.duration%60).toString().padStart(2,'0')}`;
-                const list = document.getElementById('formatsList');
-                list.innerHTML = '';
-                data.formats.forEach(f => {
-                    const div = document.createElement('div');
-                    div.className = 'format-card';
-                    div.innerHTML = `<strong>${f.resolution}</strong><br><small>${f.ext.toUpperCase()} · ${f.filesize_mb} МБ</small>`;
-                    div.onclick = () => { selectedFormat = f.format_id; document.querySelectorAll('.format-card').forEach(c => c.classList.remove('selected')); div.classList.add('selected'); };
-                    list.appendChild(div);
-                });
-                if(data.formats.length) selectedFormat = data.formats[0].format_id;
-                document.getElementById('videoInfo').style.display = 'block';
+                
+                if(data.is_playlist) {
+                    // Отображаем плейлист
+                    currentPlaylist = data;
+                    document.getElementById('playlistPanel').style.display = 'block';
+                    const videosDiv = document.getElementById('playlistVideos');
+                    videosDiv.innerHTML = '';
+                    data.videos.forEach(video => {
+                        const div = document.createElement('div');
+                        div.className = 'playlist-video-item';
+                        div.innerHTML = `
+                            <input type="checkbox" value="${video.url}" id="video_${video.id}">
+                            <label for="video_${video.id}">${video.title.substring(0, 60)}${video.title.length > 60 ? '...' : ''}</label>
+                            <span class="duration">${Math.floor(video.duration/60)}:${(video.duration%60).toString().padStart(2,'0')}</span>
+                        `;
+                        videosDiv.appendChild(div);
+                    });
+                    document.getElementById('videoInfo').style.display = 'none';
+                } else {
+                    // Отображаем обычное видео
+                    currentVideoInfo = data;
+                    document.getElementById('videoThumbnail').src = data.thumbnail || '';
+                    document.getElementById('videoTitle').innerText = data.title;
+                    if(data.duration) document.getElementById('videoDuration').innerHTML = `⏱️ Длительность: ${Math.floor(data.duration/60)}:${(data.duration%60).toString().padStart(2,'0')}`;
+                    const list = document.getElementById('formatsList');
+                    list.innerHTML = '';
+                    data.formats.forEach(f => {
+                        const div = document.createElement('div');
+                        div.className = 'format-card';
+                        const isLocked = !isPremiumUser && f.resolution !== '480p' && f.resolution !== '360p';
+                        if(isLocked) div.classList.add('premium-locked');
+                        div.innerHTML = `<strong>${f.resolution}</strong><br><small>${f.ext.toUpperCase()} · ${f.filesize_mb} МБ</small>`;
+                        if(!isLocked) {
+                            div.onclick = () => {
+                                selectedFormat = f.format_id;
+                                document.querySelectorAll('.format-card').forEach(c => c.classList.remove('selected'));
+                                div.classList.add('selected');
+                            };
+                        }
+                        list.appendChild(div);
+                    });
+                    if(data.formats.length && !data.formats[0].resolution.includes('720') && !data.formats[0].resolution.includes('1080')) {
+                        selectedFormat = data.formats[0].format_id;
+                        list.firstChild?.classList.add('selected');
+                    }
+                    document.getElementById('videoInfo').style.display = 'block';
+                    document.getElementById('downloadMp3Btn').style.display = isPremiumUser ? 'inline-block' : 'none';
+                }
             } catch(e) { document.getElementById('loader').style.display = 'none'; showAlert('Ошибка сервера', 'error'); }
         }
+        
         async function downloadVideo() {
             if(!selectedFormat || !currentVideoUrl) { showAlert('Выберите качество', 'error'); return; }
             try {
@@ -949,294 +1015,63 @@ HTML_TEMPLATE = """
                 URL.revokeObjectURL(a.href);
                 showAlert('✅ Скачивание началось!', 'success');
                 checkPremiumStatus();
-            } catch(e) { showAlert('Ошибка: '+e.message, 'error'); }
+            } catch(e) { showAlert('Ошибка: ' + e.message, 'error'); }
         }
+        
+        async function downloadMp3() {
+            if(!currentVideoUrl) { showAlert('Сначала получите информацию о видео', 'error'); return; }
+            if(!isPremiumUser) { showAlert('Конвертация в MP3 доступна только в Premium', 'error'); return; }
+            try {
+                const response = await fetch('/api/download-mp3', { method: 'POST', headers: getHeaders(), body: JSON.stringify({ url: currentVideoUrl }) });
+                if(!response.ok) { const data = await response.json(); throw new Error(data.error || 'Ошибка'); }
+                const blob = await response.blob();
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = 'audio.mp3';
+                a.click();
+                URL.revokeObjectURL(a.href);
+                showAlert('✅ MP3 готов!', 'success');
+            } catch(e) { showAlert('Ошибка: ' + e.message, 'error'); }
+        }
+        
+        async function downloadPlaylist() {
+            if(!currentPlaylist) { showAlert('Сначала получите информацию о плейлисте', 'error'); return; }
+            if(!isPremiumUser) { showAlert('Скачивание плейлистов доступно только в Premium', 'error'); return; }
+            const selected = [];
+            document.querySelectorAll('.playlist-video-item input:checked').forEach(cb => {
+                selected.push(cb.value);
+            });
+            if(selected.length === 0) { showAlert('Выберите хотя бы одно видео', 'error'); return; }
+            showAlert('📦 Начинаем скачивание плейлиста... Это может занять несколько минут', 'success');
+            try {
+                const response = await fetch('/api/download-playlist', { method: 'POST', headers: getHeaders(), body: JSON.stringify({ playlist_url: currentVideoUrl, selected_videos: selected }) });
+                if(!response.ok) { const data = await response.json(); throw new Error(data.error || 'Ошибка'); }
+                const blob = await response.blob();
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = 'playlist.zip';
+                a.click();
+                URL.revokeObjectURL(a.href);
+                showAlert('✅ Плейлист скачан!', 'success');
+            } catch(e) { showAlert('Ошибка: ' + e.message, 'error'); }
+        }
+        
         document.getElementById('videoUrl').addEventListener('keypress', e => { if(e.key === 'Enter') getVideoInfo(); });
+        document.getElementById('downloadPlaylistBtn')?.addEventListener('click', downloadPlaylist);
+        
         checkPremiumStatus();
     </script>
 </body>
 </html>
 """
 
-# ========== НОВАЯ СТРАНИЦА АВТОМОНТАЖА ==========
-AUTO_EDITOR_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VideoSave — Умный автомонтаж видео</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        :root {
-            --bg-gradient: radial-gradient(ellipse at 20% 30%, #1a1a2e, #0f0f1a);
-            --text-primary: #e0e0e0;
-            --text-secondary: #a0a0c0;
-            --card-bg: rgba(20, 20, 40, 0.55);
-            --card-border: rgba(168, 85, 247, 0.25);
-            --card-border-hover: rgba(168, 85, 247, 0.5);
-            --input-bg: rgba(0, 0, 0, 0.4);
-            --status-bg: rgba(0, 0, 0, 0.3);
-            --footer-border: rgba(255, 255, 255, 0.1);
-            --alert-error-bg: rgba(239, 68, 68, 0.15);
-            --alert-error-border: rgba(239, 68, 68, 0.4);
-            --alert-success-bg: rgba(34, 197, 94, 0.15);
-            --alert-success-border: rgba(34, 197, 94, 0.4);
-        }
-        body {
-            font-family: 'Inter', sans-serif;
-            background: var(--bg-gradient);
-            min-height: 100vh;
-            color: var(--text-primary);
-            overflow-x: hidden;
-            transition: background 0.4s ease, color 0.3s ease;
-        }
-        .container {
-            max-width: 1000px;
-            margin: 0 auto;
-            padding: 20px;
-            position: relative;
-            z-index: 2;
-        }
-        .glass-card {
-            background: var(--card-bg);
-            backdrop-filter: blur(16px);
-            border-radius: 48px;
-            padding: 40px;
-            border: 1px solid var(--card-border);
-            box-shadow: 0 25px 45px -12px rgba(0, 0, 0, 0.4), 0 0 20px rgba(168, 85, 247, 0.05);
-            transition: all 0.4s cubic-bezier(0.2, 0.9, 0.4, 1.1);
-        }
-        .glass-card:hover {
-            border-color: var(--card-border-hover);
-            transform: translateY(-4px);
-        }
-        h1 {
-            font-size: 2.5rem;
-            text-align: center;
-            background: linear-gradient(135deg, var(--text-primary), #a855f7, #7c3aed);
-            -webkit-background-clip: text;
-            background-clip: text;
-            color: transparent;
-            margin-bottom: 10px;
-        }
-        .subtitle {
-            text-align: center;
-            color: var(--text-secondary);
-            margin-bottom: 30px;
-        }
-        .url-input {
-            width: 100%;
-            padding: 16px 24px;
-            background: var(--input-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 60px;
-            font-size: 1rem;
-            color: var(--text-primary);
-            transition: all 0.3s;
-            margin-bottom: 20px;
-        }
-        .url-input:focus {
-            outline: none;
-            border-color: #a855f7;
-            box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15);
-        }
-        .btn {
-            width: 100%;
-            padding: 16px;
-            border: none;
-            border-radius: 60px;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s;
-            background: linear-gradient(135deg, #a855f7, #7c3aed);
-            color: white;
-            position: relative;
-            overflow: hidden;
-        }
-        .btn::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
-            transition: left 0.5s;
-        }
-        .btn:hover::before { left: 100%; }
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px -5px rgba(168, 85, 247, 0.4);
-        }
-        .intensity-buttons {
-            display: flex;
-            gap: 15px;
-            margin: 20px 0;
-            justify-content: center;
-            flex-wrap: wrap;
-        }
-        .intensity-btn {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 40px;
-            padding: 10px 24px;
-            cursor: pointer;
-            transition: all 0.3s;
-            color: var(--text-primary);
-            font-weight: 500;
-        }
-        .intensity-btn.active {
-            background: #22c55e;
-            border-color: #22c55e;
-        }
-        .loader {
-            display: none;
-            text-align: center;
-            padding: 40px;
-        }
-        .spinner {
-            width: 50px;
-            height: 50px;
-            border: 4px solid rgba(168, 85, 247, 0.2);
-            border-top: 4px solid #a855f7;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 15px;
-        }
-        @keyframes spin { 100% { transform: rotate(360deg); } }
-        .alert {
-            padding: 14px;
-            border-radius: 20px;
-            margin-bottom: 20px;
-        }
-        .alert-error {
-            background: var(--alert-error-bg);
-            border: 1px solid var(--alert-error-border);
-            color: #fca5a5;
-        }
-        .alert-success {
-            background: var(--alert-success-bg);
-            border: 1px solid var(--alert-success-border);
-            color: #86efac;
-        }
-        .footer {
-            text-align: center;
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid var(--footer-border);
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-        }
-        .footer a { color: #a855f7; text-decoration: none; }
-        @media (max-width: 600px) {
-            .glass-card { padding: 24px; }
-            h1 { font-size: 1.8rem; }
-            .intensity-btn { padding: 8px 16px; font-size: 0.9rem; }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="glass-card">
-            <h1>🎬 Умный автомонтаж видео</h1>
-            <p class="subtitle">ИИ-анализ найдет самые интересные моменты и смонтирует клип</p>
-            
-            <div id="alertContainer"></div>
-            
-            <input type="text" id="videoUrl" class="url-input" placeholder="Вставьте ссылку на видео (YouTube, RuTube, VK)..." autocomplete="off">
-            
-            <div class="intensity-buttons">
-                <span class="intensity-btn" data-intensity="short">⚡ Короткий (~30 сек)</span>
-                <span class="intensity-btn active" data-intensity="medium">🎬 Средний (~60 сек)</span>
-                <span class="intensity-btn" data-intensity="long">🐌 Длинный (~120 сек)</span>
-            </div>
-            
-            <button class="btn" id="autoEditBtn">✨ Сделать умный автомонтаж (Premium)</button>
-            
-            <div class="loader" id="loader">
-                <div class="spinner"></div>
-                <p>Анализируем видео и ищем интересные моменты...<br>Это может занять до минуты</p>
-            </div>
-            
-            <div class="footer">
-                <p>🎥 Автомонтаж доступен только для Premium-пользователей</p>
-                <p><a href="/">← Вернуться на главную</a></p>
-            </div>
-        </div>
-    </div>
-    <script>
-        let userId = localStorage.getItem('videoSaveUserId');
-        if (!userId) {
-            userId = crypto.randomUUID ? crypto.randomUUID() : 'user_' + Date.now() + '_' + Math.random().toString(36);
-            localStorage.setItem('videoSaveUserId', userId);
-        }
-        
-        let currentIntensity = 'medium';
-        
-        document.querySelectorAll('.intensity-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('.intensity-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                currentIntensity = btn.dataset.intensity;
-            });
-        });
-        
-        function showAlert(msg, type) {
-            const container = document.getElementById('alertContainer');
-            container.innerHTML = `<div class="alert alert-${type}">${msg}</div>`;
-            setTimeout(() => container.innerHTML = '', 5000);
-        }
-        
-        document.getElementById('autoEditBtn').addEventListener('click', async () => {
-            const url = document.getElementById('videoUrl').value.trim();
-            if (!url) { showAlert('Вставьте ссылку на видео', 'error'); return; }
-            
-            showAlert('🎬 Начинаем умный автомонтаж... Анализируем видео', 'success');
-            document.getElementById('loader').style.display = 'block';
-            
-            try {
-                const response = await fetch('/api/auto-edit', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-User-Id': userId },
-                    body: JSON.stringify({ url: url, intensity: currentIntensity, format_id: 'best' })
-                });
-                
-                if (!response.ok) {
-                    const data = await response.json();
-                    throw new Error(data.error || 'Ошибка');
-                }
-                
-                const blob = await response.blob();
-                const a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = 'auto_edited_video.mp4';
-                a.click();
-                URL.revokeObjectURL(a.href);
-                showAlert('✅ Автомонтаж завершён! Видео готово к скачиванию.', 'success');
-            } catch (e) {
-                showAlert('Ошибка: ' + e.message, 'error');
-            } finally {
-                document.getElementById('loader').style.display = 'none';
-            }
-        });
-    </script>
-</body>
-</html>
-"""
-
+# ---------- МАРШРУТЫ ----------
 @app.route('/')
 def index():
     user_id = get_user_id()
     resp = make_response(render_template_string(HTML_TEMPLATE))
     set_user_id_cookie(resp, user_id)
     return resp
-
-@app.route('/auto-editor')
-def auto_editor():
-    return render_template_string(AUTO_EDITOR_TEMPLATE)
 
 @app.route('/api/premium-status')
 def api_premium_status():
@@ -1264,16 +1099,23 @@ def api_video_info():
         if not url:
             return jsonify({'error': 'URL не указан'}), 400
         
+        # Проверяем, плейлист ли это
+        if 'playlist' in url or 'list=' in url:
+            info, err = get_playlist_info(url)
+            if err:
+                return jsonify({'error': err}), 400
+            if info:
+                info['is_playlist'] = True
+                return jsonify(info)
+        
+        # Обычное видео
         info, err = get_video_info(url)
         if err:
             return jsonify({'error': err}), 400
-        
         user_id = request.cookies.get('videoSaveUserId')
         if user_id:
             info['premium'] = is_premium(user_id)
-        else:
-            info['premium'] = False
-        
+        info['is_playlist'] = False
         return jsonify(info)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1317,15 +1159,12 @@ def api_download():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/auto-edit', methods=['POST'])
+@app.route('/api/download-mp3', methods=['POST'])
 @rate_limit(10, 60)
-def api_auto_edit():
+def api_download_mp3():
     try:
         data = request.get_json()
         url = data.get('url', '').strip()
-        intensity = data.get('intensity', 'medium')
-        format_id = data.get('format_id', 'best')
-        
         if not url:
             return jsonify({'error': 'URL не указан'}), 400
         
@@ -1334,44 +1173,87 @@ def api_auto_edit():
             user_id = str(uuid.uuid4())
         
         if not is_premium(user_id):
-            return jsonify({'error': 'Доступно только в Premium подписке! Оформите Premium за 50₽/месяц или 650₽/год'}), 403
+            return jsonify({'error': 'Конвертация в MP3 доступна только в Premium'}), 403
         
-        original_path, err = download_video(url, format_id)
+        # Скачиваем видео в лучшем качестве
+        video_path, err = download_video(url, 'bestaudio')
         if err:
             return jsonify({'error': err}), 400
-        if not original_path or not os.path.exists(original_path):
+        if not video_path or not os.path.exists(video_path):
             return jsonify({'error': 'Не удалось скачать видео'}), 500
         
-        edited_filename = f"edited_{uuid.uuid4()}.mp4"
-        edited_path = os.path.join(DOWNLOAD_FOLDER, edited_filename)
+        # Конвертируем в MP3
+        mp3_path = video_path.replace('.mp4', '.mp3').replace('.webm', '.mp3')
+        if not convert_to_mp3(video_path, mp3_path):
+            return jsonify({'error': 'Ошибка конвертации в MP3'}), 500
         
-        success = auto_edit_video(original_path, edited_path, intensity)
-        
+        # Удаляем оригинал
         try:
-            if os.path.exists(original_path):
-                os.remove(original_path)
+            if os.path.exists(video_path):
+                os.remove(video_path)
         except:
             pass
         
-        if not success:
-            return jsonify({'error': 'Ошибка при обработке видео'}), 500
-        
-        if not os.path.exists(edited_path):
-            return jsonify({'error': 'Не удалось создать отредактированное видео'}), 500
-        
         @after_this_request
-        def remove_edited(resp):
+        def remove_mp3(resp):
             try:
-                if os.path.exists(edited_path):
-                    os.remove(edited_path)
+                if os.path.exists(mp3_path):
+                    os.remove(mp3_path)
             except:
                 pass
             return resp
         
-        return send_file(edited_path, as_attachment=True, download_name='auto_edited_video.mp4', mimetype='video/mp4')
-        
+        return send_file(mp3_path, as_attachment=True, download_name='audio.mp3')
     except Exception as e:
-        logger.error(f"Ошибка автомонтажа: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/download-playlist', methods=['POST'])
+@rate_limit(5, 120)
+def api_download_playlist():
+    try:
+        data = request.get_json()
+        playlist_url = data.get('playlist_url', '').strip()
+        selected_videos = data.get('selected_videos', [])
+        
+        if not playlist_url or not selected_videos:
+            return jsonify({'error': 'Не указаны параметры'}), 400
+        
+        user_id = request.cookies.get('videoSaveUserId')
+        if not user_id:
+            user_id = str(uuid.uuid4())
+        
+        if not is_premium(user_id):
+            return jsonify({'error': 'Скачивание плейлистов доступно только в Premium'}), 403
+        
+        # Создаём временную папку
+        temp_dir = os.path.join(DOWNLOAD_FOLDER, f'playlist_{uuid.uuid4()}')
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        zip_path, err = download_playlist(playlist_url, selected_videos, temp_dir)
+        
+        # Удаляем временную папку
+        try:
+            import shutil
+            shutil.rmtree(temp_dir)
+        except:
+            pass
+        
+        if err:
+            return jsonify({'error': err}), 500
+        if not zip_path or not os.path.exists(zip_path):
+            return jsonify({'error': 'Не удалось создать архив'}), 500
+        
+        @after_this_request
+        def remove_zip(resp):
+            try:
+                if os.path.exists(zip_path):
+                    os.remove(zip_path)
+            except:
+                pass
+            return resp
+        
+        return send_file(zip_path, as_attachment=True, download_name='playlist.zip')
+    except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/create_yookassa_payment')
@@ -1573,4 +1455,4 @@ def return_policy():
 <body><div class="card"><h1>📋 Политика возврата</h1><h2>Условия оплаты</h2><ul><li>Оплата через ЮKassa</li><li>Стоимость: 50₽/месяц, 650₽/год</li></ul><h2>Условия возврата</h2><ul><li>Возврат в течение 14 дней</li><li>Для возврата: bogdanyrenko@gmail.com</li></ul><a href="/">← На главную</a></div></body></html>'''
 
 if __name__ == '__main__':
-    pass
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))

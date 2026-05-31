@@ -1,0 +1,12 @@
+import sys, os
+
+# Путь к виртуальному окружению на сервере Jino
+INTERP = os.path.expanduser("~/flask_venv/bin/python3")
+
+if sys.executable != INTERP:
+    os.execl(INTERP, INTERP, *sys.argv)
+
+sys.path.append(os.getcwd())
+
+# Импортируем Flask-приложение из app.py
+from app import app as application
