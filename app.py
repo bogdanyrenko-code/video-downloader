@@ -22,7 +22,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'super-secret-key-2024-change-me')
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500 MB max
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 
 YOOKASSA_SHOP_ID = "1369767"
 YOOKASSA_SECRET_KEY = "test_92d73ZaVYlLk9i1BvEwS6p5tflhwj7PSqiutGHHtosY"
@@ -47,7 +47,8 @@ SECRET_REQUISITES_KEY = "Bogdan2025Secure"
 
 PRICES = {
     'month': 50,
-    'year': 650
+    'year': 650,
+    'forever': 800
 }
 
 def load_premium_users():
@@ -58,8 +59,8 @@ def load_premium_users():
                 now = datetime.now()
                 result = {}
                 for user_id, data in loaded.items():
-                    expire_date = datetime.strptime(data['expire'], '%Y-%m-%d')
-                    if expire_date >= now:
+                    expire_date = datetime.strptime(data.get('expire', '2000-01-01'), '%Y-%m-%d')
+                    if data.get('ads_disabled_forever', False) or expire_date >= now:
                         result[user_id] = data
                 logger.info(f"Загружено {len(result)} премиум-пользователей")
                 return result
@@ -79,18 +80,42 @@ def is_premium(user_id):
     premium_users = load_premium_users()
     if user_id not in premium_users:
         return False
-    expire_date = datetime.strptime(premium_users[user_id]['expire'], '%Y-%m-%d')
+    if premium_users[user_id].get('ads_disabled_forever', False):
+        return True
+    expire_date = datetime.strptime(premium_users[user_id].get('expire', '2000-01-01'), '%Y-%m-%d')
     return datetime.now() < expire_date
+
+def should_show_ad(user_id):
+    """Проверяет, нужно ли показывать рекламу пользователю"""
+    premium_users = load_premium_users()
+    if user_id not in premium_users:
+        return True
+    user_data = premium_users[user_id]
+    if user_data.get('ads_disabled_forever', False):
+        return False
+    expire_date = datetime.strptime(user_data.get('expire', '2000-01-01'), '%Y-%m-%d')
+    return datetime.now() >= expire_date
 
 def add_premium(user_id, days=30):
     premium_users = load_premium_users()
     expire_date = datetime.now() + timedelta(days=days)
     premium_users[user_id] = {
         'expire': expire_date.strftime('%Y-%m-%d'),
-        'activated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        'activated': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'ads_disabled_forever': premium_users.get(user_id, {}).get('ads_disabled_forever', False)
     }
     save_premium_users(premium_users)
     logger.info(f"Премиум активирован для {user_id} до {expire_date}")
+
+def add_forever(user_id):
+    premium_users = load_premium_users()
+    premium_users[user_id] = {
+        'expire': '2099-12-31',
+        'activated': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'ads_disabled_forever': True
+    }
+    save_premium_users(premium_users)
+    logger.info(f"Вечное отключение рекламы активировано для {user_id}")
 
 def cleanup_old_files():
     while True:
@@ -193,7 +218,6 @@ def get_rutube_video_info(url):
         return None, str(e)
 
 def get_playlist_info(url):
-    """Получает информацию о плейлисте YouTube"""
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -223,7 +247,6 @@ def get_playlist_info(url):
         return None, str(e)
 
 def download_playlist(url, selected_videos, output_dir):
-    """Скачивает выбранные видео из плейлиста и упаковывает в ZIP"""
     downloaded_files = []
     
     ydl_opts = {
@@ -242,7 +265,6 @@ def download_playlist(url, selected_videos, output_dir):
                 if os.path.exists(filename):
                     downloaded_files.append(filename)
                 else:
-                    # Пробуем с другим расширением
                     for ext in ['.mp4', '.webm', '.mkv']:
                         test_path = filename.replace('.mp4', ext) if '.mp4' in filename else filename + ext
                         if os.path.exists(test_path):
@@ -254,21 +276,17 @@ def download_playlist(url, selected_videos, output_dir):
     if not downloaded_files:
         return None, "Не удалось скачать ни одного видео"
     
-    # Создаём ZIP-архив
     zip_path = os.path.join(output_dir, f"playlist_{uuid.uuid4()}.zip")
     with zipfile.ZipFile(zip_path, 'w') as zipf:
         for file in downloaded_files:
             zipf.write(file, os.path.basename(file))
-            os.remove(file)  # Удаляем исходный файл после добавления в архив
+            os.remove(file)
     
     return zip_path, None
 
 def convert_to_mp3(input_path, output_path):
-    """Конвертирует видео в MP3 с тегами"""
     try:
-        # Получаем название видео для тегов
         title = os.path.splitext(os.path.basename(input_path))[0]
-        
         cmd = [
             'ffmpeg', '-i', input_path,
             '-vn', '-acodec', 'libmp3lame', '-ab', '192k',
@@ -342,14 +360,14 @@ def download_video(url, format_id='best'):
     except Exception as e:
         return None, str(e)
 
-# ========== HTML ШАБЛОН ==========
+# ========== HTML ШАБЛОН С РЕКЛАМОЙ ==========
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VideoSave — Скачивай видео без рекламы</title>
+    <title>VideoSave — Скачивай видео</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -769,6 +787,24 @@ HTML_TEMPLATE = """
             font-size: 0.8rem;
             color: var(--text-secondary);
         }
+        /* Рекламный блок */
+        .ad-container {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 20px;
+            padding: 10px;
+            margin: 20px 0;
+            text-align: center;
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+        .ad-container iframe {
+            max-width: 100%;
+            border: none;
+        }
+        .ad-label {
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            margin-bottom: 5px;
+        }
         @media (max-width: 600px) {
             .glass-card { padding: 24px; }
             h1 { font-size: 2rem; }
@@ -799,6 +835,17 @@ HTML_TEMPLATE = """
                 <span id="premiumStatus">🔍 Загрузка...</span>
             </div>
             <div id="alertContainer"></div>
+            
+            <!-- Рекламный блок (показывается только если реклама не отключена) -->
+            <div id="adBlock" class="ad-container" style="display: none;">
+                <div class="ad-label">Реклама</div>
+                <div style="background: linear-gradient(135deg, #1a1a2e, #2a2a3a); padding: 20px; border-radius: 16px;">
+                    <span style="font-size: 2rem;">📺</span>
+                    <p style="margin: 10px 0;">Поддержите проект — отключите рекламу всего за 50₽/мес или 800₽ навсегда!</p>
+                    <a href="#premium-section" class="btn-premium" style="font-size: 0.8rem; padding: 6px 16px;">🔓 Отключить рекламу</a>
+                </div>
+            </div>
+            
             <input type="text" id="videoUrl" class="url-input" placeholder="Вставьте ссылку на видео или плейлист YouTube...">
             <button class="btn" onclick="getVideoInfo()">🎯 Получить информацию</button>
             <div class="loader" id="loader" style="display:none; text-align:center; padding:20px;"><div class="spinner" style="width:40px;height:40px;border:3px solid rgba(168,85,247,0.2);border-top-color:#a855f7;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto;"></div><p>Обработка...</p></div>
@@ -821,16 +868,18 @@ HTML_TEMPLATE = """
             </div>
             <div class="premium-card" id="premiumCard" style="margin-top:30px; text-align:center; display:none;">
                 <div style="font-size:2rem;">✨</div>
-                <h3>Премиум возможности</h3>
-                <div style="display:flex; justify-content:center; gap:30px; margin:20px 0; flex-wrap:wrap;">
-                    <div><div style="font-size:2rem;">🚀</div><div>Безлимит</div></div>
+                <h3>Устали от рекламы?</h3>
+                <p style="margin-bottom: 20px;">Отключите рекламу навсегда или оформите подписку!</p>
+                <div style="display:flex; justify-content:center; gap:15px; margin:20px 0; flex-wrap:wrap;">
+                    <div><div style="font-size:2rem;">🚀</div><div>Безлимит скачиваний</div></div>
                     <div><div style="font-size:2rem;">🎯</div><div>4K качество</div></div>
                     <div><div style="font-size:2rem;">📁</div><div>Скачивание плейлистов</div></div>
                     <div><div style="font-size:2rem;">🎵</div><div>Конвертация в MP3</div></div>
                 </div>
-                <div style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap;">
-                    <a href="#" class="btn-premium" id="payMonthBtn">💳 Premium на месяц — 50₽</a>
-                    <a href="#" class="btn-premium" id="payYearBtn" style="background: linear-gradient(135deg, #22c55e, #16a34a);">💎 Premium на год — 650₽ (скидка 46%)</a>
+                <div id="premium-section" style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap;">
+                    <a href="#" class="btn-premium" id="payMonthBtn">🔓 Убрать рекламу на месяц — 50₽</a>
+                    <a href="#" class="btn-premium" id="payForeverBtn" style="background: linear-gradient(135deg, #22c55e, #16a34a);">⭐ Убрать рекламу НАВСЕГДА — 800₽</a>
+                    <a href="#" class="btn-premium" id="payYearBtn" style="background: linear-gradient(135deg, #3b82f6, #1d4ed8);">💎 Premium подписка на год — 650₽</a>
                 </div>
             </div>
             <div class="footer">
@@ -866,16 +915,22 @@ HTML_TEMPLATE = """
                 isPremiumUser = data.is_premium;
                 const statusDiv = document.getElementById('premiumStatus');
                 const premiumCard = document.getElementById('premiumCard');
+                const adBlock = document.getElementById('adBlock');
                 const payMonthBtn = document.getElementById('payMonthBtn');
                 const payYearBtn = document.getElementById('payYearBtn');
+                const payForeverBtn = document.getElementById('payForeverBtn');
+                
                 if (data.is_premium) {
-                    statusDiv.innerHTML = '<span class="premium-badge">⭐ PREMIUM до ' + data.expire_date + '</span>';
+                    statusDiv.innerHTML = '<span class="premium-badge">⭐ PREMIUM — рекламы нет до ' + data.expire_date + '</span>';
                     if (premiumCard) premiumCard.style.display = 'none';
+                    if (adBlock) adBlock.style.display = 'none';
                 } else {
-                    statusDiv.innerHTML = '<span class="free-badge">🔓 Бесплатный (осталось ' + data.downloads_left + ' из 3 скачиваний на этой неделе)</span>';
+                    statusDiv.innerHTML = '<span class="free-badge">🔓 Бесплатный (осталось ' + data.downloads_left + ' из 3 скачиваний)</span>';
                     if (premiumCard) premiumCard.style.display = 'block';
+                    if (adBlock && data.show_ad) adBlock.style.display = 'block';
                     if (payMonthBtn) payMonthBtn.href = '/create_yookassa_payment?plan=month';
                     if (payYearBtn) payYearBtn.href = '/create_yookassa_payment?plan=year';
+                    if (payForeverBtn) payForeverBtn.href = '/create_yookassa_payment?plan=forever';
                 }
             } catch(e) { console.error(e); }
         }
@@ -954,7 +1009,6 @@ HTML_TEMPLATE = """
                 if(data.error) { showAlert(data.error, 'error'); return; }
                 
                 if(data.is_playlist) {
-                    // Отображаем плейлист
                     currentPlaylist = data;
                     document.getElementById('playlistPanel').style.display = 'block';
                     const videosDiv = document.getElementById('playlistVideos');
@@ -971,7 +1025,6 @@ HTML_TEMPLATE = """
                     });
                     document.getElementById('videoInfo').style.display = 'none';
                 } else {
-                    // Отображаем обычное видео
                     currentVideoInfo = data;
                     document.getElementById('videoThumbnail').src = data.thumbnail || '';
                     document.getElementById('videoTitle').innerText = data.title;
@@ -1078,18 +1131,19 @@ def index():
 def api_premium_status():
     user_id = request.cookies.get('videoSaveUserId')
     if not user_id:
-        return jsonify({'is_premium': False, 'expire_date': None, 'downloads_left': MAX_FREE_DOWNLOADS_PER_WEEK})
+        return jsonify({'is_premium': False, 'expire_date': None, 'downloads_left': MAX_FREE_DOWNLOADS_PER_WEEK, 'show_ad': True})
     
     week_key = get_week_key()
     downloads_week = DOWNLOAD_STATS.get(user_id, {}).get(week_key, 0)
     downloads_left = max(0, MAX_FREE_DOWNLOADS_PER_WEEK - downloads_week)
+    show_ad = should_show_ad(user_id)
     
     if is_premium(user_id):
         premium_users = load_premium_users()
-        expire_date = premium_users[user_id]['expire'] if user_id in premium_users else None
-        return jsonify({'is_premium': True, 'expire_date': expire_date, 'downloads_left': downloads_left})
+        expire_date = premium_users[user_id].get('expire', '2099-12-31') if user_id in premium_users else None
+        return jsonify({'is_premium': True, 'expire_date': expire_date, 'downloads_left': downloads_left, 'show_ad': False})
     else:
-        return jsonify({'is_premium': False, 'expire_date': None, 'downloads_left': downloads_left})
+        return jsonify({'is_premium': False, 'expire_date': None, 'downloads_left': downloads_left, 'show_ad': show_ad})
 
 @app.route('/api/video-info', methods=['POST'])
 @rate_limit(20, 60)
@@ -1100,7 +1154,6 @@ def api_video_info():
         if not url:
             return jsonify({'error': 'URL не указан'}), 400
         
-        # Проверяем, плейлист ли это
         if 'playlist' in url or 'list=' in url:
             info, err = get_playlist_info(url)
             if err:
@@ -1109,7 +1162,6 @@ def api_video_info():
                 info['is_playlist'] = True
                 return jsonify(info)
         
-        # Обычное видео
         info, err = get_video_info(url)
         if err:
             return jsonify({'error': err}), 400
@@ -1176,19 +1228,16 @@ def api_download_mp3():
         if not is_premium(user_id):
             return jsonify({'error': 'Конвертация в MP3 доступна только в Premium'}), 403
         
-        # Скачиваем видео в лучшем качестве
         video_path, err = download_video(url, 'bestaudio')
         if err:
             return jsonify({'error': err}), 400
         if not video_path or not os.path.exists(video_path):
             return jsonify({'error': 'Не удалось скачать видео'}), 500
         
-        # Конвертируем в MP3
         mp3_path = video_path.replace('.mp4', '.mp3').replace('.webm', '.mp3')
         if not convert_to_mp3(video_path, mp3_path):
             return jsonify({'error': 'Ошибка конвертации в MP3'}), 500
         
-        # Удаляем оригинал
         try:
             if os.path.exists(video_path):
                 os.remove(video_path)
@@ -1226,13 +1275,11 @@ def api_download_playlist():
         if not is_premium(user_id):
             return jsonify({'error': 'Скачивание плейлистов доступно только в Premium'}), 403
         
-        # Создаём временную папку
         temp_dir = os.path.join(DOWNLOAD_FOLDER, f'playlist_{uuid.uuid4()}')
         os.makedirs(temp_dir, exist_ok=True)
         
         zip_path, err = download_playlist(playlist_url, selected_videos, temp_dir)
         
-        # Удаляем временную папку
         try:
             import shutil
             shutil.rmtree(temp_dir)
@@ -1265,7 +1312,13 @@ def create_yookassa_payment():
     
     plan = request.args.get('plan', 'month')
     amount = PRICES.get(plan, 50)
-    days = 30 if plan == 'month' else 365
+    
+    if plan == 'month':
+        days = 30
+    elif plan == 'year':
+        days = 365
+    else:
+        days = 36500  # forever ~100 лет
     
     try:
         return_url = f"https://video-downloader-r3y6.onrender.com/payment_success_yookassa?user_id={user_id}&plan={plan}"
@@ -1277,7 +1330,7 @@ def create_yookassa_payment():
                 "return_url": return_url
             },
             "capture": True,
-            "description": f"Premium подписка на {plan}",
+            "description": f"Отключение рекламы - {plan}",
             "metadata": {"user_id": user_id, "plan": plan, "days": days}
         })
         return redirect(payment.confirmation.confirmation_url)
@@ -1294,9 +1347,13 @@ def payment_success_yookassa():
         user_id = request.cookies.get('videoSaveUserId')
     
     if user_id:
-        days = 365 if plan == 'year' else 30
-        add_premium(user_id, days)
-        logger.info(f"✅ Премиум активирован для {user_id} на {days} дней ({plan})")
+        if plan == 'forever':
+            add_forever(user_id)
+            logger.info(f"✅ Вечное отключение рекламы активировано для {user_id}")
+        else:
+            days = 365 if plan == 'year' else 30
+            add_premium(user_id, days)
+            logger.info(f"✅ Премиум активирован для {user_id} на {days} дней ({plan})")
     else:
         logger.error("❌ Не удалось получить user_id")
     
@@ -1325,7 +1382,7 @@ def payment_success_yookassa():
 <body>
     <div class="loader"></div>
     <h1>✅ Оплата прошла успешно!</h1>
-    <p>Ваша премиум-подписка активирована.</p>
+    <p>Реклама отключена. Спасибо за поддержку проекта!</p>
     <p>Перенаправление...</p>
 </body>
 </html>
@@ -1340,10 +1397,14 @@ def yookassa_webhook():
             payment = data.get('object', {})
             metadata = payment.get('metadata', {})
             user_id = metadata.get('user_id')
-            days = int(metadata.get('days', 30))
+            plan = metadata.get('plan', 'month')
             if user_id:
-                add_premium(user_id, days)
-                logger.info(f"Премиум активирован для {user_id} через webhook на {days} дней")
+                if plan == 'forever':
+                    add_forever(user_id)
+                else:
+                    days = int(metadata.get('days', 30))
+                    add_premium(user_id, days)
+                logger.info(f"Премиум активирован для {user_id} через webhook")
         return jsonify({'status': 'ok'}), 200
     except Exception as e:
         logger.error(f"Ошибка webhook: {e}")
@@ -1412,7 +1473,7 @@ def requisites_secret():
     <p><strong>Email:</strong> bogdanyrenko@gmail.com</p>
     <p><strong>Сайт:</strong> https://video-downloader-r3y6.onrender.com</p>
     <h2>📋 Условия оплаты</h2>
-    <ul><li>Оплата через ЮKassa (банковская карта)</li><li>Месяц: 50₽ | Год: 650₽</li></ul>
+    <ul><li>Оплата через ЮKassa (банковская карта)</li><li>Отключение рекламы на месяц: 50₽</li><li>Отключение рекламы навсегда: 800₽</li><li>Premium подписка на год: 650₽</li></ul>
     <h2>↩️ Условия возврата</h2>
     <ul><li>Возврат в течение 14 дней</li><li>Связь: bogdanyrenko@gmail.com</li></ul>
     <p><a href="/logout-requisites">Выйти</a> | <a href="/">На главную</a></p>
@@ -1453,7 +1514,7 @@ def return_policy():
     return '''<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"><title>Условия возврата</title><style>body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;padding:40px}.card{background:rgba(20,20,40,0.6);backdrop-filter:blur(12px);padding:30px;border-radius:24px;max-width:700px;margin:auto;border:1px solid rgba(168,85,247,0.3)}h1{color:#a855f7}</style></head>
-<body><div class="card"><h1>📋 Политика возврата</h1><h2>Условия оплаты</h2><ul><li>Оплата через ЮKassa</li><li>Стоимость: 50₽/месяц, 650₽/год</li></ul><h2>Условия возврата</h2><ul><li>Возврат в течение 14 дней</li><li>Для возврата: bogdanyrenko@gmail.com</li></ul><a href="/">← На главную</a></div></body></html>'''
+<body><div class="card"><h1>📋 Политика возврата</h1><h2>Условия оплаты</h2><ul><li>Оплата через ЮKassa</li><li>Отключение рекламы на месяц: 50₽</li><li>Отключение рекламы навсегда: 800₽</li><li>Premium подписка на год: 650₽</li></ul><h2>Условия возврата</h2><ul><li>Возврат в течение 14 дней</li><li>Для возврата: bogdanyrenko@gmail.com</li></ul><a href="/">← На главную</a></div></body></html>'''
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    app.run(host='0.0.0.0', port=7860)
