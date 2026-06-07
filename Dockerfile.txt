@@ -1,0 +1,19 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Устанавливаем ffmpeg для конвертации в MP3
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+
+# Копируем requirements и устанавливаем зависимости
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копируем весь код
+COPY . .
+
+# Порт, который ждёт Hugging Face
+EXPOSE 7860
+
+# Запускаем приложение
+CMD ["python", "app.py"]
