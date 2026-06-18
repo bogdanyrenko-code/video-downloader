@@ -7,6 +7,7 @@ import json
 import logging
 import subprocess
 import zipfile
+import threading
 from datetime import datetime, timedelta
 from flask import Flask, request, send_file, render_template_string, session, redirect, url_for, jsonify, after_this_request, make_response
 import yt_dlp
@@ -35,6 +36,21 @@ os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 PREMIUM_FILE = "premium_users.json"
 DOWNLOAD_STATS = {}
 USER_SESSIONS = {}
+ONLINE_USERS = {}
+ONLINE_TIMEOUT = 300
+
+def cleanup_online_users():
+    now = time.time()
+    expired = [uid for uid, last_seen in ONLINE_USERS.items() if now - last_seen > ONLINE_TIMEOUT]
+    for uid in expired:
+        del ONLINE_USERS[uid]
+    threading.Timer(60, cleanup_online_users).start()
+
+cleanup_online_users()
+
+def update_online_status(user_id):
+    if user_id:
+        ONLINE_USERS[user_id] = time.time()
 
 MAX_FREE_DOWNLOADS_PER_WEEK = 3
 MAX_FREE_QUALITY = 720
@@ -62,7 +78,6 @@ def load_premium_users():
                     expire_date = datetime.strptime(data.get('expire', '2000-01-01'), '%Y-%m-%d')
                     if data.get('ads_disabled_forever', False) or expire_date >= now:
                         result[user_id] = data
-                logger.info(f"Загружено {len(result)} премиум-пользователей")
                 return result
         except Exception as e:
             logger.error(f"Ошибка загрузки: {e}")
@@ -72,7 +87,6 @@ def save_premium_users(premium_users):
     try:
         with open(PREMIUM_FILE, 'w', encoding='utf-8') as f:
             json.dump(premium_users, f, ensure_ascii=False, indent=2)
-        logger.info(f"Сохранено {len(premium_users)} премиум-пользователей")
     except Exception as e:
         logger.error(f"Ошибка сохранения: {e}")
 
@@ -86,7 +100,6 @@ def is_premium(user_id):
     return datetime.now() < expire_date
 
 def should_show_ad(user_id):
-    """Проверяет, нужно ли показывать рекламу пользователю"""
     premium_users = load_premium_users()
     if user_id not in premium_users:
         return True
@@ -105,7 +118,6 @@ def add_premium(user_id, days=30):
         'ads_disabled_forever': premium_users.get(user_id, {}).get('ads_disabled_forever', False)
     }
     save_premium_users(premium_users)
-    logger.info(f"Премиум активирован для {user_id} до {expire_date}")
 
 def add_forever(user_id):
     premium_users = load_premium_users()
@@ -115,7 +127,6 @@ def add_forever(user_id):
         'ads_disabled_forever': True
     }
     save_premium_users(premium_users)
-    logger.info(f"Вечное отключение рекламы активировано для {user_id}")
 
 def cleanup_old_files():
     while True:
@@ -123,12 +134,10 @@ def cleanup_old_files():
             now = time.time()
             for filename in os.listdir(DOWNLOAD_FOLDER):
                 filepath = os.path.join(DOWNLOAD_FOLDER, filename)
-                if os.path.isfile(filepath):
-                    if now - os.path.getmtime(filepath) > FILE_RETENTION_TIME:
-                        os.remove(filepath)
-                        logger.info(f"Удален старый файл: {filename}")
-        except Exception as e:
-            logger.error(f"Ошибка при очистке файлов: {e}")
+                if os.path.isfile(filepath) and now - os.path.getmtime(filepath) > FILE_RETENTION_TIME:
+                    os.remove(filepath)
+        except:
+            pass
         time.sleep(CLEANUP_INTERVAL)
 
 cleanup_thread = Thread(target=cleanup_old_files, daemon=True)
@@ -156,17 +165,13 @@ def get_week_key():
 def check_download_limit(user_id):
     if is_premium(user_id):
         return True, None
-    
     week_key = get_week_key()
     if user_id not in DOWNLOAD_STATS:
         DOWNLOAD_STATS[user_id] = {}
-    
     if week_key not in DOWNLOAD_STATS[user_id]:
         DOWNLOAD_STATS[user_id][week_key] = 0
-    
     if DOWNLOAD_STATS[user_id][week_key] >= MAX_FREE_DOWNLOADS_PER_WEEK:
-        return False, f"Достигнут лимит скачиваний ({MAX_FREE_DOWNLOADS_PER_WEEK} видео в неделю). Купите Premium для безлимита!"
-    
+        return False, f"Лимит {MAX_FREE_DOWNLOADS_PER_WEEK} видео в неделю исчерпан. Premium снимает все ограничения!"
     return True, None
 
 def increment_download_count(user_id):
@@ -187,7 +192,7 @@ def rate_limit(max_requests=10, window=60):
                 USER_SESSIONS[user_id] = []
             USER_SESSIONS[user_id] = [req_time for req_time in USER_SESSIONS[user_id] if now - req_time < window]
             if len(USER_SESSIONS[user_id]) >= max_requests and not is_premium(user_id):
-                return jsonify({'error': 'Слишком много запросов. Подождите немного.'}), 429
+                return jsonify({'error': 'Слишком много запросов. Подождите.'}), 429
             USER_SESSIONS[user_id].append(now)
             return f(*args, **kwargs)
         return wrapped
@@ -197,9 +202,7 @@ def extract_rutube_id(url):
     if '?' in url:
         url = url.split('?')[0]
     match = re.search(r'rutube\.ru/video/([a-f0-9]+)', url)
-    if match:
-        return match.group(1)
-    return None
+    return match.group(1) if match else None
 
 def get_rutube_video_info(url):
     video_id = extract_rutube_id(url)
@@ -218,12 +221,7 @@ def get_rutube_video_info(url):
         return None, str(e)
 
 def get_playlist_info(url):
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'extract_flat': True,
-        'ignoreerrors': True,
-    }
+    ydl_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True, 'ignoreerrors': True}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -237,26 +235,18 @@ def get_playlist_info(url):
                             'duration': entry.get('duration', 0),
                             'url': f"https://youtube.com/watch?v={entry.get('id')}"
                         })
-                return {
-                    'title': info.get('title', 'Плейлист'),
-                    'count': len(videos),
-                    'videos': videos
-                }, None
+                return {'title': info.get('title', 'Плейлист'), 'count': len(videos), 'videos': videos}, None
             return None, "Не удалось распознать плейлист"
     except Exception as e:
         return None, str(e)
 
 def download_playlist(url, selected_videos, output_dir):
     downloaded_files = []
-    
     ydl_opts = {
         'outtmpl': os.path.join(output_dir, '%(title)s.%(ext)s'),
-        'quiet': True,
-        'no_warnings': True,
-        'ignoreerrors': True,
+        'quiet': True, 'no_warnings': True, 'ignoreerrors': True,
         'format': 'best[height<=720]',
     }
-    
     for video_url in selected_videos:
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -272,16 +262,13 @@ def download_playlist(url, selected_videos, output_dir):
                             break
         except Exception as e:
             logger.error(f"Ошибка скачивания {video_url}: {e}")
-    
     if not downloaded_files:
         return None, "Не удалось скачать ни одного видео"
-    
     zip_path = os.path.join(output_dir, f"playlist_{uuid.uuid4()}.zip")
     with zipfile.ZipFile(zip_path, 'w') as zipf:
         for file in downloaded_files:
             zipf.write(file, os.path.basename(file))
             os.remove(file)
-    
     return zip_path, None
 
 def convert_to_mp3(input_path, output_path):
@@ -346,76 +333,445 @@ def download_video(url, format_id='best'):
                 if size_mb > max_size:
                     os.remove(filename)
                     return None, f"Файл слишком большой ({size_mb:.1f} МБ). Максимум: {max_size} МБ"
-                
                 if not is_premium(user_id):
                     resolution_match = re.search(r'(\d+)p', format_id)
                     if resolution_match:
                         resolution = int(resolution_match.group(1))
                         if resolution > MAX_FREE_QUALITY:
                             os.remove(filename)
-                            return None, f"Качество {resolution}p доступно только в Premium. Оформите подписку за 50₽/месяц"
-                
+                            return None, f"Качество {resolution}p доступно только в Premium"
                 return filename, None
             return None, "Не удалось скачать видео"
     except Exception as e:
         return None, str(e)
 
-# ========== HTML ШАБЛОН С РЕКЛАМОЙ ==========
+# ========== НОВЫЙ ФУТУРИСТИЧНЫЙ ДИЗАЙН ==========
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VideoSave — Скачивай видео</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
+    <title>VideoSave — Скачивай видео будущего</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+
         :root {
-            --bg-gradient: radial-gradient(ellipse at 20% 30%, #1a1a2e, #0f0f1a);
-            --text-primary: #e0e0e0;
+            --bg: #0a0a1a;
+            --neon-purple: #b44dff;
+            --neon-blue: #4d7cff;
+            --neon-cyan: #00e5ff;
+            --neon-pink: #ff4d8c;
+            --neon-yellow: #ffd700;
+            --card-bg: rgba(10, 10, 30, 0.7);
+            --card-border: rgba(180, 77, 255, 0.3);
+            --text: #e0e0f0;
             --text-secondary: #a0a0c0;
-            --card-bg: rgba(20, 20, 40, 0.55);
-            --card-border: rgba(168, 85, 247, 0.25);
-            --card-border-hover: rgba(168, 85, 247, 0.5);
-            --input-bg: rgba(0, 0, 0, 0.4);
-            --status-bg: rgba(0, 0, 0, 0.3);
-            --premium-card-bg: rgba(30, 30, 50, 0.5);
-            --premium-card-border: rgba(245, 158, 11, 0.3);
-            --footer-border: rgba(255, 255, 255, 0.1);
-            --alert-error-bg: rgba(239, 68, 68, 0.15);
-            --alert-error-border: rgba(239, 68, 68, 0.4);
-            --alert-success-bg: rgba(34, 197, 94, 0.15);
-            --alert-success-border: rgba(34, 197, 94, 0.4);
-            --format-card-bg: rgba(30, 30, 50, 0.6);
+            --input-bg: rgba(0, 0, 0, 0.5);
+            --glow: 0 0 15px rgba(180, 77, 255, 0.4);
         }
-        body.light {
-            --bg-gradient: radial-gradient(ellipse at 20% 30%, #e0e0e0, #c0c0d0);
-            --text-primary: #1e293b;
-            --text-secondary: #475569;
-            --card-bg: rgba(255, 255, 255, 0.7);
-            --card-border: rgba(168, 85, 247, 0.3);
-            --card-border-hover: rgba(168, 85, 247, 0.6);
-            --input-bg: rgba(255, 255, 255, 0.8);
-            --status-bg: rgba(255, 255, 255, 0.4);
-            --premium-card-bg: rgba(255, 255, 255, 0.5);
-            --premium-card-border: rgba(245, 158, 11, 0.4);
-            --footer-border: rgba(0, 0, 0, 0.1);
-            --alert-error-bg: rgba(239, 68, 68, 0.1);
-            --alert-error-border: rgba(239, 68, 68, 0.3);
-            --alert-success-bg: rgba(34, 197, 94, 0.1);
-            --alert-success-border: rgba(34, 197, 94, 0.3);
-            --format-card-bg: rgba(255, 255, 255, 0.7);
-        }
+
         body {
             font-family: 'Inter', sans-serif;
-            background: var(--bg-gradient);
+            background: var(--bg);
+            color: var(--text);
             min-height: 100vh;
-            color: var(--text-primary);
             overflow-x: hidden;
-            transition: background 0.4s ease, color 0.3s ease;
+            cursor: default;
+            transition: background 0.3s, color 0.3s;
+        }
+
+        /* Анимированная сетка на фоне */
+        .bg-grid {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image: 
+                linear-gradient(rgba(180, 77, 255, 0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(180, 77, 255, 0.05) 1px, transparent 1px);
+            background-size: 60px 60px;
+            z-index: 0;
+            animation: gridMove 20s linear infinite;
+            pointer-events: none;
+        }
+        @keyframes gridMove {
+            0% { transform: translate(0,0); }
+            100% { transform: translate(60px, 60px); }
+        }
+        /* Светящиеся частицы */
+        .particles {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            pointer-events: none;
+        }
+        .particle {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            background: var(--neon-purple);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--neon-purple);
+            animation: floatParticle linear infinite;
+        }
+        @keyframes floatParticle {
+            0% { transform: translateY(0) rotate(0deg); opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { transform: translateY(-100vh) rotate(360deg); opacity: 0; }
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 30px 20px;
+            position: relative;
+            z-index: 10;
+        }
+
+        /* Кибер-карточка */
+        .cyber-card {
+            background: var(--card-bg);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--card-border);
+            border-radius: 40px;
+            padding: 45px 40px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.6), inset 0 0 30px rgba(180,77,255,0.1);
+            position: relative;
+            overflow: hidden;
+            animation: cardAppear 0.8s cubic-bezier(0.23, 1, 0.32, 1);
+        }
+        @keyframes cardAppear {
+            from { opacity: 0; transform: translateY(50px) scale(0.95); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .cyber-card::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: conic-gradient(from 0deg, transparent, var(--neon-purple), transparent, var(--neon-cyan), transparent);
+            animation: rotateGlow 8s linear infinite;
+            opacity: 0.1;
+        }
+        @keyframes rotateGlow {
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Логотип */
+        .logo-icon {
+            font-size: 5rem;
+            text-align: center;
+            filter: drop-shadow(0 0 15px var(--neon-purple));
+            animation: logoFloat 3s ease-in-out infinite;
+        }
+        @keyframes logoFloat {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-12px); }
+        }
+        h1 {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 3.8rem;
+            text-align: center;
+            background: linear-gradient(90deg, var(--neon-purple), var(--neon-blue), var(--neon-cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin: 10px 0;
+            animation: textShine 3s ease infinite;
+        }
+        @keyframes textShine {
+            0%, 100% { filter: hue-rotate(0deg); }
+            50% { filter: hue-rotate(15deg); }
+        }
+        .subtitle {
+            text-align: center;
+            color: var(--text-secondary);
+            margin-bottom: 30px;
+            font-size: 1.1rem;
+            letter-spacing: 1px;
+        }
+
+        /* Платформы */
+        .platforms {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 30px;
+        }
+        .platform-badge {
+            background: rgba(180, 77, 255, 0.1);
+            border: 1px solid var(--card-border);
+            padding: 8px 20px;
+            border-radius: 30px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--neon-purple);
+            backdrop-filter: blur(5px);
+            transition: all 0.3s;
             cursor: default;
         }
+        .platform-badge:hover {
+            background: rgba(180, 77, 255, 0.25);
+            box-shadow: 0 0 15px rgba(180, 77, 255, 0.4);
+            transform: translateY(-2px);
+        }
+
+        /* Статусная панель */
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 30px;
+            padding: 14px 28px;
+            margin-bottom: 30px;
+            border: 1px solid var(--card-border);
+        }
+        .premium-badge {
+            background: linear-gradient(135deg, #ffd700, #ffaa00);
+            padding: 6px 24px;
+            border-radius: 30px;
+            font-weight: bold;
+            color: #000;
+            box-shadow: 0 0 20px rgba(255, 215, 0, 0.5);
+            animation: glowPulse 2s infinite;
+        }
+        @keyframes glowPulse {
+            0%, 100% { box-shadow: 0 0 15px rgba(255,215,0,0.5); }
+            50% { box-shadow: 0 0 25px rgba(255,215,0,0.8); }
+        }
+        .free-badge {
+            background: rgba(255,255,255,0.1);
+            padding: 6px 24px;
+            border-radius: 30px;
+            color: var(--text-secondary);
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        .online-counter {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(0, 229, 255, 0.1);
+            padding: 6px 20px;
+            border-radius: 30px;
+            border: 1px solid rgba(0, 229, 255, 0.3);
+            color: var(--neon-cyan);
+            font-weight: 600;
+        }
+        .online-dot {
+            width: 10px;
+            height: 10px;
+            background: var(--neon-cyan);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--neon-cyan);
+            animation: pulseDot 1.5s infinite;
+        }
+        @keyframes pulseDot {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.6); opacity: 0.6; }
+        }
+
+        /* Поле ввода */
+        .url-input {
+            width: 100%;
+            padding: 18px 28px;
+            background: var(--input-bg);
+            border: 2px solid var(--card-border);
+            border-radius: 60px;
+            font-size: 1rem;
+            color: white;
+            margin-bottom: 20px;
+            backdrop-filter: blur(10px);
+            transition: 0.3s;
+        }
+        .url-input:focus {
+            outline: none;
+            border-color: var(--neon-purple);
+            box-shadow: 0 0 25px rgba(180, 77, 255, 0.4);
+        }
+
+        /* Кнопки */
+        .btn {
+            width: 100%;
+            padding: 16px;
+            border: none;
+            border-radius: 60px;
+            font-weight: 700;
+            font-size: 1rem;
+            cursor: pointer;
+            background: linear-gradient(135deg, var(--neon-purple), var(--neon-blue));
+            color: white;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 0 30px rgba(180, 77, 255, 0.6);
+        }
+        .btn:active { transform: scale(0.98); }
+        .btn-premium {
+            display: inline-block;
+            background: linear-gradient(135deg, #ffd700, #ffaa00);
+            padding: 12px 28px;
+            border-radius: 50px;
+            color: #000;
+            font-weight: bold;
+            text-decoration: none;
+            transition: 0.3s;
+        }
+        .btn-premium:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 0 25px rgba(255,215,0,0.5);
+        }
+        .btn-mp3 {
+            background: linear-gradient(135deg, #00e676, #00c853);
+            border-radius: 50px;
+            padding: 10px 20px;
+            color: #000;
+            font-weight: bold;
+            text-decoration: none;
+            transition: 0.3s;
+        }
+        .btn-mp3:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 0 20px rgba(0, 230, 118, 0.5);
+        }
+
+        /* Загрузчик */
+        .loader-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 30px;
+        }
+        .neon-spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid rgba(180, 77, 255, 0.2);
+            border-top-color: var(--neon-purple);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            box-shadow: 0 0 15px var(--neon-purple);
+        }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+
+        /* Форматы */
+        .formats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 14px;
+            margin: 20px 0;
+        }
+        .format-card {
+            background: rgba(20, 20, 40, 0.6);
+            border: 1px solid var(--card-border);
+            border-radius: 20px;
+            padding: 16px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            backdrop-filter: blur(5px);
+        }
+        .format-card:hover {
+            border-color: var(--neon-purple);
+            box-shadow: 0 0 20px rgba(180, 77, 255, 0.3);
+            transform: translateY(-4px);
+        }
+        .format-card.selected {
+            background: rgba(180, 77, 255, 0.2);
+            border-color: var(--neon-purple);
+            box-shadow: 0 0 25px var(--neon-purple);
+            transform: scale(1.03);
+        }
+        .format-card.premium-locked {
+            opacity: 0.5;
+            cursor: not-allowed;
+            position: relative;
+        }
+        .format-card.premium-locked::after {
+            content: '🔒';
+            position: absolute;
+            top: 5px;
+            right: 10px;
+            font-size: 14px;
+        }
+
+        /* Плейлист */
+        .playlist-panel {
+            display: none;
+            margin-top: 20px;
+            padding: 20px;
+            background: rgba(10,10,30,0.7);
+            border-radius: 24px;
+            border: 1px solid var(--card-border);
+            backdrop-filter: blur(15px);
+        }
+
+        /* Уведомления */
+        .alert {
+            padding: 14px 20px;
+            border-radius: 16px;
+            margin-bottom: 20px;
+            animation: slideIn 0.4s ease;
+            font-weight: 500;
+        }
+        .alert-error {
+            background: rgba(255, 77, 140, 0.2);
+            border: 1px solid var(--neon-pink);
+            color: #ffb3cc;
+        }
+        .alert-success {
+            background: rgba(0, 230, 118, 0.2);
+            border: 1px solid #00e676;
+            color: #b3ffcc;
+        }
+        @keyframes slideIn {
+            from { transform: translateX(20px); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        /* Реклама */
+        .ad-container {
+            background: rgba(255, 215, 0, 0.1);
+            border: 1px solid rgba(255, 215, 0, 0.3);
+            border-radius: 24px;
+            padding: 12px;
+            margin: 20px 0;
+            text-align: center;
+        }
+
+        /* Счётчик лопнутых сфер */
+        .score-board {
+            position: fixed;
+            top: 20px;
+            right: 80px;
+            background: rgba(10,10,30,0.8);
+            border: 1px solid var(--neon-purple);
+            border-radius: 30px;
+            padding: 8px 22px;
+            font-weight: bold;
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            backdrop-filter: blur(10px);
+        }
+
+        /* Антистресс-сферы (неоновые) */
         #spheresContainer {
             position: fixed;
             top: 0;
@@ -430,399 +786,68 @@ HTML_TEMPLATE = """
             position: absolute;
             border-radius: 50%;
             cursor: pointer;
-            transition: transform 0.05s linear;
+            box-shadow: 0 0 20px currentColor;
             animation: floatSphere 8s ease-in-out infinite;
-            box-shadow: 0 0 15px rgba(168, 85, 247, 0.5);
-            z-index: 5;
-            pointer-events: auto;
         }
         @keyframes floatSphere {
             0%, 100% { transform: translateY(0) translateX(0); }
-            25% { transform: translateY(-20px) translateX(15px); }
-            50% { transform: translateY(10px) translateX(-10px); }
+            25% { transform: translateY(-25px) translateX(15px); }
+            50% { transform: translateY(10px) translateX(-15px); }
             75% { transform: translateY(-10px) translateX(20px); }
         }
         @keyframes popExplosion {
             0% { transform: scale(1); opacity: 1; }
-            50% { transform: scale(1.8); opacity: 0.8; background: radial-gradient(circle, #ffaa00, #ff6600); }
+            50% { transform: scale(2); opacity: 0.8; filter: blur(1px); }
             100% { transform: scale(0); opacity: 0; }
         }
         .pop-animation { animation: popExplosion 0.3s ease-out forwards; }
-        .score-board {
-            position: fixed;
-            top: 20px;
-            right: 80px;
-            background: var(--card-bg);
-            backdrop-filter: blur(16px);
-            border: 1px solid var(--card-border);
-            border-radius: 50px;
-            padding: 8px 18px;
-            font-size: 1.2rem;
-            font-weight: bold;
-            z-index: 100;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            transition: all 0.3s;
-        }
+
+        /* Достижение */
         .achievement {
             position: fixed;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%) scale(0);
-            background: linear-gradient(135deg, #f59e0b, #d97706);
-            color: white;
+            background: linear-gradient(135deg, #ffd700, #ffaa00);
+            color: #000;
             font-size: 4rem;
             font-weight: bold;
             padding: 20px 40px;
-            border-radius: 80px;
+            border-radius: 60px;
             z-index: 200;
             white-space: nowrap;
-            box-shadow: 0 0 50px rgba(245, 158, 11, 0.8);
-            text-shadow: 0 0 10px rgba(0,0,0,0.3);
+            box-shadow: 0 0 50px gold;
             animation: achievementPop 0.5s ease-out forwards;
             pointer-events: none;
         }
         @keyframes achievementPop {
-            0% { transform: translate(-50%, -50%) scale(0); opacity: 0; }
-            50% { transform: translate(-50%, -50%) scale(1.2); opacity: 1; }
-            100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+            0% { transform: translate(-50%, -50%) scale(0); }
+            50% { transform: translate(-50%, -50%) scale(1.3); }
+            100% { transform: translate(-50%, -50%) scale(1); }
         }
         .achievement-fade { animation: achievementFade 2s ease-in forwards; }
         @keyframes achievementFade {
             0% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-            80% { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
-            100% { opacity: 0; transform: translate(-50%, -50%) scale(1.3); display: none; }
+            80% { opacity: 1; }
+            100% { opacity: 0; transform: translate(-50%, -50%) scale(1.5); }
         }
-        .confetti {
-            position: fixed;
-            width: 10px;
-            height: 10px;
-            background: #f59e0b;
-            position: absolute;
-            z-index: 150;
-            animation: confettiFall 3s ease-out forwards;
-        }
-        @keyframes confettiFall {
-            0% { transform: translateY(-100vh) rotate(0deg); opacity: 1; }
-            100% { transform: translateY(100vh) rotate(360deg); opacity: 0; }
-        }
-        .container {
-            max-width: 1000px;
-            margin: 0 auto;
-            padding: 20px;
-            position: relative;
-            z-index: 20;
-        }
-        .theme-toggle {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: var(--card-bg);
-            backdrop-filter: blur(16px);
-            border: 1px solid var(--card-border);
-            border-radius: 50px;
-            width: 50px;
-            height: 50px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            font-size: 1.6rem;
-            z-index: 100;
-            transition: all 0.3s ease;
-        }
-        .glass-card {
-            background: var(--card-bg);
-            backdrop-filter: blur(16px);
-            border-radius: 48px;
-            padding: 40px;
-            border: 1px solid var(--card-border);
-            box-shadow: 0 25px 45px -12px rgba(0, 0, 0, 0.4), 0 0 20px rgba(168, 85, 247, 0.05);
-            transition: all 0.4s cubic-bezier(0.2, 0.9, 0.4, 1.1);
-            z-index: 20;
-            position: relative;
-        }
-        .glass-card:hover {
-            border-color: var(--card-border-hover);
-            transform: translateY(-4px);
-        }
-        .logo {
-            text-align: center;
-            font-size: 4.5rem;
-            margin-bottom: 10px;
-            animation: floatLogo 3s ease-in-out infinite;
-        }
-        @keyframes floatLogo {
-            0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-12px); }
-        }
-        h1 {
-            font-size: 3rem;
-            text-align: center;
-            background: linear-gradient(135deg, var(--text-primary), #a855f7, #7c3aed);
-            -webkit-background-clip: text;
-            background-clip: text;
-            color: transparent;
-            margin-bottom: 10px;
-        }
-        .subtitle {
-            text-align: center;
-            color: var(--text-secondary);
-            margin-bottom: 30px;
-        }
-        .platforms {
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: center;
-            gap: 12px;
-            margin-bottom: 30px;
-        }
-        .platform-badge {
-            background: rgba(255, 255, 255, 0.05);
-            backdrop-filter: blur(4px);
-            padding: 6px 18px;
-            border-radius: 40px;
-            font-size: 0.85rem;
-            font-weight: 500;
-            color: var(--text-secondary);
-            border: 1px solid var(--card-border);
-            transition: all 0.3s;
-            cursor: default;
-        }
-        .status-card {
-            background: var(--status-bg);
-            border-radius: 24px;
-            padding: 16px 24px;
-            margin-bottom: 30px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 15px;
-            border: 1px solid var(--card-border);
-        }
-        .premium-badge {
-            background: linear-gradient(135deg, #f59e0b, #d97706);
-            padding: 8px 22px;
-            border-radius: 40px;
-            font-weight: bold;
-            color: white;
-            animation: glow 2s infinite;
-        }
-        .free-badge {
-            background: rgba(255, 255, 255, 0.1);
-            padding: 8px 22px;
-            border-radius: 40px;
-            color: var(--text-secondary);
-        }
-        .url-input {
-            width: 100%;
-            padding: 16px 24px;
-            background: var(--input-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 60px;
-            font-size: 1rem;
-            color: var(--text-primary);
-            transition: all 0.3s;
-            margin-bottom: 20px;
-        }
-        .url-input:focus {
-            outline: none;
-            border-color: #a855f7;
-            box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.15);
-        }
-        .btn {
-            width: 100%;
-            padding: 16px;
-            border: none;
-            border-radius: 60px;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s;
-            background: linear-gradient(135deg, #a855f7, #7c3aed);
-            color: white;
-            position: relative;
-            overflow: hidden;
-        }
-        .btn::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
-            transition: left 0.5s;
-        }
-        .btn:hover::before { left: 100%; }
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px -5px rgba(168, 85, 247, 0.4);
-        }
-        .btn-premium {
-            display: inline-block;
-            background: linear-gradient(135deg, #f59e0b, #d97706);
-            border-radius: 60px;
-            padding: 12px 32px;
-            color: white;
-            text-decoration: none;
-            font-weight: bold;
-            transition: all 0.3s;
-        }
-        .btn-premium:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px -5px rgba(245, 158, 11, 0.4);
-        }
-        .btn-mp3 {
-            display: inline-block;
-            background: linear-gradient(135deg, #22c55e, #16a34a);
-            border-radius: 60px;
-            padding: 8px 16px;
-            color: white;
-            text-decoration: none;
-            font-weight: bold;
-            transition: all 0.3s;
-            font-size: 0.8rem;
-            margin-top: 5px;
-        }
-        .btn-mp3:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px -5px rgba(34, 197, 94, 0.4);
-        }
-        .formats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-            gap: 12px;
-            margin: 20px 0;
-        }
-        .format-card {
-            background: var(--format-card-bg);
-            backdrop-filter: blur(4px);
-            border: 1px solid var(--card-border);
-            border-radius: 20px;
-            padding: 14px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.3s cubic-bezier(0.2, 0.9, 0.4, 1.1);
-        }
-        .format-card.selected {
-            background: rgba(168, 85, 247, 0.2);
-            border-color: #a855f7;
-            box-shadow: 0 0 15px rgba(168, 85, 247, 0.2);
-        }
-        .format-card.premium-locked {
-            opacity: 0.5;
-            cursor: not-allowed;
-            position: relative;
-        }
-        .format-card.premium-locked::after {
-            content: '🔒';
-            position: absolute;
-            top: 5px;
-            right: 10px;
-            font-size: 12px;
-        }
-        .playlist-panel {
-            display: none;
-            margin-top: 20px;
-            padding: 20px;
-            background: var(--card-bg);
-            border-radius: 20px;
-            border: 1px solid var(--card-border);
-        }
-        .playlist-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-        .playlist-videos {
-            max-height: 300px;
-            overflow-y: auto;
-        }
-        .playlist-video-item {
-            display: flex;
-            align-items: center;
-            padding: 8px;
-            border-bottom: 1px solid var(--card-border);
-            gap: 10px;
-        }
-        .playlist-video-item input {
-            width: 20px;
-            height: 20px;
-            cursor: pointer;
-        }
-        .playlist-video-item label {
-            flex: 1;
-            cursor: pointer;
-            font-size: 0.9rem;
-        }
-        .playlist-video-item .duration {
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-        }
-        .btn-download-playlist {
-            background: linear-gradient(135deg, #f59e0b, #d97706);
-            padding: 12px 24px;
-            border-radius: 60px;
-            border: none;
-            color: white;
-            font-weight: bold;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        .btn-download-playlist:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px -5px rgba(245, 158, 11, 0.4);
-        }
-        .footer {
-            text-align: center;
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid var(--footer-border);
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-        }
-        /* Рекламный блок */
-        .ad-container {
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 20px;
-            padding: 10px;
-            margin: 20px 0;
-            text-align: center;
-            border: 1px solid rgba(245, 158, 11, 0.3);
-        }
-        .ad-container iframe {
-            max-width: 100%;
-            border: none;
-        }
-        .ad-label {
-            font-size: 0.7rem;
-            color: var(--text-secondary);
-            margin-bottom: 5px;
-        }
+
         @media (max-width: 600px) {
-            .glass-card { padding: 24px; }
-            h1 { font-size: 2rem; }
-            .score-board { top: 10px; right: 60px; font-size: 1rem; }
-            .achievement { font-size: 2rem; padding: 15px 30px; }
-            .playlist-header { flex-direction: column; align-items: stretch; }
+            .cyber-card { padding: 25px; }
+            h1 { font-size: 2.2rem; }
         }
     </style>
 </head>
 <body>
+    <div class="bg-grid"></div>
+    <div class="particles" id="particles"></div>
     <div id="spheresContainer"></div>
     <div class="score-board"><span>💥</span><span id="scoreValue">0</span></div>
-    <div class="theme-toggle" id="themeToggle">🌙</div>
     <div class="container">
-        <div class="glass-card animate">
-            <div class="logo">🎬</div>
-            <h1>VideoSave</h1>
-            <p class="subtitle">Галактический загрузчик видео</p>
+        <div class="cyber-card">
+            <div class="logo-icon">🎬</div>
+            <h1>VIDEOSAVE</h1>
+            <p class="subtitle">НЕЙРО-ЗАГРУЗЧИК МЕДИА</p>
             <div class="platforms">
                 <span class="platform-badge">YouTube</span>
                 <span class="platform-badge">RuTube</span>
@@ -830,69 +855,73 @@ HTML_TEMPLATE = """
                 <span class="platform-badge">Twitch</span>
                 <span class="platform-badge">TikTok</span>
             </div>
-            <div class="status-card">
-                <strong>📊 Статус:</strong>
+            <div class="status-bar">
+                <strong>📊 СТАТУС</strong>
                 <span id="premiumStatus">🔍 Загрузка...</span>
+                <span class="online-counter" id="onlineCounter">
+                    <span class="online-dot"></span>
+                    <span id="onlineCount">0</span> онлайн
+                </span>
             </div>
             <div id="alertContainer"></div>
-            
-            <!-- Рекламный блок (показывается только если реклама не отключена) -->
             <div id="adBlock" class="ad-container" style="display: none;">
-                <div class="ad-label">Реклама</div>
-                <div style="background: linear-gradient(135deg, #1a1a2e, #2a2a3a); padding: 20px; border-radius: 16px;">
-                    <span style="font-size: 2rem;">📺</span>
-                    <p style="margin: 10px 0;">Поддержите проект — отключите рекламу всего за 50₽/мес или 800₽ навсегда!</p>
-                    <a href="#premium-section" class="btn-premium" style="font-size: 0.8rem; padding: 6px 16px;">🔓 Отключить рекламу</a>
-                </div>
+                <div style="color: var(--neon-yellow);">РЕКЛАМА</div>
+                <p style="margin: 10px 0;">Отключи рекламу навсегда за 800₽ или оформи Premium</p>
+                <a href="#premium-section" class="btn-premium" style="font-size: 0.8rem; padding: 6px 16px;">🔓 Отключить</a>
             </div>
-            
-            <input type="text" id="videoUrl" class="url-input" placeholder="Вставьте ссылку на видео или плейлист YouTube...">
-            <button class="btn" onclick="getVideoInfo()">🎯 Получить информацию</button>
-            <div class="loader" id="loader" style="display:none; text-align:center; padding:20px;"><div class="spinner" style="width:40px;height:40px;border:3px solid rgba(168,85,247,0.2);border-top-color:#a855f7;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto;"></div><p>Обработка...</p></div>
-            <div class="video-info" id="videoInfo" style="display:none; margin-top:30px;">
-                <img id="videoThumbnail" style="width:100%; border-radius:24px;">
-                <h3 id="videoTitle"></h3>
+            <input type="text" id="videoUrl" class="url-input" placeholder="ВСТАВЬТЕ ССЫЛКУ НА ВИДЕО ИЛИ ПЛЕЙЛИСТ...">
+            <button class="btn" onclick="getVideoInfo()">⚡ ПОЛУЧИТЬ ИНФОРМАЦИЮ</button>
+            <div class="loader-container" id="loader" style="display:none;">
+                <div class="neon-spinner"></div>
+                <p style="margin-top:15px; color: var(--neon-purple);">ОБРАБОТКА...</p>
+            </div>
+            <div id="videoInfo" style="display:none; margin-top:30px;">
+                <img id="videoThumbnail" style="width:100%; border-radius: 24px; border: 2px solid var(--card-border);">
+                <h3 id="videoTitle" style="margin: 20px 0 10px;"></h3>
                 <div id="videoDuration" style="color:var(--text-secondary); margin:10px 0;"></div>
                 <div class="formats-grid" id="formatsList"></div>
-                <div style="margin-top: 15px;">
-                    <button class="btn" id="downloadBtn" onclick="downloadVideo()">⬇️ Скачать видео</button>
-                    <button class="btn-mp3" id="downloadMp3Btn" onclick="downloadMp3()" style="display: none;">🎵 Скачать MP3 (Premium)</button>
+                <div style="margin-top: 20px; display: flex; gap: 15px; flex-wrap: wrap;">
+                    <button class="btn" id="downloadBtn" onclick="downloadVideo()" style="flex:1;">⬇️ СКАЧАТЬ ВИДЕО</button>
+                    <button class="btn-mp3" id="downloadMp3Btn" onclick="downloadMp3()" style="display: none; flex:1;">🎵 СКАЧАТЬ MP3</button>
                 </div>
             </div>
             <div class="playlist-panel" id="playlistPanel">
-                <div class="playlist-header">
-                    <h3>📋 Содержимое плейлиста</h3>
-                    <button class="btn-download-playlist" id="downloadPlaylistBtn">⬇️ Скачать выбранное (Premium)</button>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <h3>📋 ПЛЕЙЛИСТ</h3>
+                    <button class="btn-premium" id="downloadPlaylistBtn">⬇️ СКАЧАТЬ ВЫБРАННОЕ</button>
                 </div>
                 <div class="playlist-videos" id="playlistVideos"></div>
             </div>
-            <div class="premium-card" id="premiumCard" style="margin-top:30px; text-align:center; display:none;">
-                <div style="font-size:2rem;">✨</div>
-                <h3>Устали от рекламы?</h3>
-                <p style="margin-bottom: 20px;">Отключите рекламу навсегда или оформите подписку!</p>
-                <div style="display:flex; justify-content:center; gap:15px; margin:20px 0; flex-wrap:wrap;">
-                    <div><div style="font-size:2rem;">🚀</div><div>Безлимит скачиваний</div></div>
-                    <div><div style="font-size:2rem;">🎯</div><div>4K качество</div></div>
-                    <div><div style="font-size:2rem;">📁</div><div>Скачивание плейлистов</div></div>
-                    <div><div style="font-size:2rem;">🎵</div><div>Конвертация в MP3</div></div>
-                </div>
+            <div style="margin-top:30px; text-align:center; display:none;" id="premiumCard">
+                <div style="font-size:2.5rem;">✨</div>
+                <h3>ОТКЛЮЧИ РЕКЛАМУ</h3>
+                <p style="margin-bottom:20px;">Безлимит, 4K, плейлисты, MP3</p>
                 <div id="premium-section" style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap;">
-                    <a href="#" class="btn-premium" id="payMonthBtn">🔓 Убрать рекламу на месяц — 50₽</a>
-                    <a href="#" class="btn-premium" id="payForeverBtn" style="background: linear-gradient(135deg, #22c55e, #16a34a);">⭐ Убрать рекламу НАВСЕГДА — 800₽</a>
-                    <a href="#" class="btn-premium" id="payYearBtn" style="background: linear-gradient(135deg, #3b82f6, #1d4ed8);">💎 Premium подписка на год — 650₽</a>
+                    <a href="#" class="btn-premium" id="payMonthBtn">🔓 Месяц — 50₽</a>
+                    <a href="#" class="btn-premium" id="payForeverBtn" style="background: linear-gradient(135deg, #00e676, #00c853);">⭐ НАВСЕГДА — 800₽</a>
+                    <a href="#" class="btn-premium" id="payYearBtn" style="background: linear-gradient(135deg, #4d7cff, #1d4ed8);">💎 Год — 650₽</a>
                 </div>
             </div>
-            <div class="footer">
-                <p>🎥 VideoSave — скачивай видео без рекламы и ограничений</p>
-                <p><a href="/return-policy">Политика возврата</a> | <a href="/requisites/secret">Реквизиты</a></p>
+            <div style="text-align:center; margin-top:30px; font-size:0.8rem; color: var(--text-secondary);">
+                <p>© 2026 VideoSave — нейро-загрузчик | <a href="/return-policy">Возврат</a> | <a href="/requisites/secret">Реквизиты</a></p>
             </div>
         </div>
     </div>
-    <style>
-        .loader .spinner { animation: spin 1s linear infinite; }
-        @keyframes spin { 100% { transform: rotate(360deg); } }
-    </style>
+
     <script>
+        // Частицы
+        const particlesContainer = document.getElementById('particles');
+        for (let i = 0; i < 40; i++) {
+            const particle = document.createElement('div');
+            particle.className = 'particle';
+            particle.style.left = Math.random() * 100 + '%';
+            particle.style.bottom = '-10px';
+            particle.style.animationDuration = (Math.random() * 10 + 8) + 's';
+            particle.style.animationDelay = Math.random() * 5 + 's';
+            particle.style.background = ['#b44dff','#4d7cff','#00e5ff','#ff4d8c'][Math.floor(Math.random()*4)];
+            particlesContainer.appendChild(particle);
+        }
+
         let userId = localStorage.getItem('videoSaveUserId');
         if (!userId) {
             userId = crypto.randomUUID ? crypto.randomUUID() : 'user_' + Date.now() + '_' + Math.random().toString(36);
@@ -903,216 +932,212 @@ HTML_TEMPLATE = """
         let currentPlaylist = null;
         let selectedFormat = null;
         let isPremiumUser = false;
-        
+
         function getHeaders() {
             return { 'Content-Type': 'application/json', 'X-User-Id': userId };
         }
-        
+
         async function checkPremiumStatus() {
             try {
                 const response = await fetch('/api/premium-status', { headers: getHeaders() });
                 const data = await response.json();
                 isPremiumUser = data.is_premium;
-                const statusDiv = document.getElementById('premiumStatus');
-                const premiumCard = document.getElementById('premiumCard');
-                const adBlock = document.getElementById('adBlock');
-                const payMonthBtn = document.getElementById('payMonthBtn');
-                const payYearBtn = document.getElementById('payYearBtn');
-                const payForeverBtn = document.getElementById('payForeverBtn');
-                
-                if (data.is_premium) {
-                    statusDiv.innerHTML = '<span class="premium-badge">⭐ PREMIUM — рекламы нет до ' + data.expire_date + '</span>';
-                    if (premiumCard) premiumCard.style.display = 'none';
-                    if (adBlock) adBlock.style.display = 'none';
-                } else {
-                    statusDiv.innerHTML = '<span class="free-badge">🔓 Бесплатный (осталось ' + data.downloads_left + ' из 3 скачиваний)</span>';
-                    if (premiumCard) premiumCard.style.display = 'block';
-                    if (adBlock && data.show_ad) adBlock.style.display = 'block';
-                    if (payMonthBtn) payMonthBtn.href = '/create_yookassa_payment?plan=month';
-                    if (payYearBtn) payYearBtn.href = '/create_yookassa_payment?plan=year';
-                    if (payForeverBtn) payForeverBtn.href = '/create_yookassa_payment?plan=forever';
-                }
+                document.getElementById('premiumStatus').innerHTML = data.is_premium ? 
+                    '<span class="premium-badge">⭐ PREMIUM до ' + data.expire_date + '</span>' :
+                    '<span class="free-badge">🔓 Бесплатно (' + data.downloads_left + ' из 3 скачиваний)</span>';
+                document.getElementById('premiumCard').style.display = data.is_premium ? 'none' : 'block';
+                document.getElementById('adBlock').style.display = (data.show_ad && !data.is_premium) ? 'block' : 'none';
+                document.getElementById('payMonthBtn').href = '/create_yookassa_payment?plan=month';
+                document.getElementById('payYearBtn').href = '/create_yookassa_payment?plan=year';
+                document.getElementById('payForeverBtn').href = '/create_yookassa_payment?plan=forever';
+                document.getElementById('downloadMp3Btn').style.display = data.is_premium ? 'inline-block' : 'none';
             } catch(e) { console.error(e); }
         }
-        
+
+        let lastOnline = 0;
+        async function updateOnlineCounter() {
+            try {
+                const resp = await fetch('/api/online');
+                const data = await resp.json();
+                const newCount = data.online || 0;
+                animateNumber(document.getElementById('onlineCount'), lastOnline, newCount);
+                lastOnline = newCount;
+            } catch(e) {}
+        }
+        function animateNumber(el, start, end) {
+            const dur = 400;
+            const step = end > start ? 1 : -1;
+            const interval = Math.abs(Math.floor(dur / (end - start))) || 20;
+            let cur = start;
+            const timer = setInterval(() => {
+                cur += step;
+                el.textContent = cur;
+                if (cur === end) clearInterval(timer);
+            }, interval);
+        }
+        setInterval(updateOnlineCounter, 30000);
+        updateOnlineCounter();
+
+        // Антистресс сферы (неоновые)
         let score = 0, spheres = [], achievementShown = false;
         const spheresContainer = document.getElementById('spheresContainer');
         const scoreElement = document.getElementById('scoreValue');
+        const colors = ['#b44dff','#4d7cff','#00e5ff','#ff4d8c','#ffd700'];
         function createSphere() {
             const sphere = document.createElement('div');
-            sphere.classList.add('pop-sphere');
-            const size = Math.random() * 40 + 30;
+            sphere.className = 'pop-sphere';
+            const size = Math.random() * 35 + 25;
             sphere.style.width = size + 'px';
             sphere.style.height = size + 'px';
-            sphere.style.left = Math.random() * (window.innerWidth - 100) + 'px';
-            sphere.style.top = Math.random() * (window.innerHeight - 100) + 'px';
-            sphere.style.background = `radial-gradient(circle at 30% 30%, rgba(168,85,247,0.85), rgba(124,58,237,0.65))`;
-            sphere.style.animationDuration = (Math.random() * 5 + 5) + 's';
+            sphere.style.left = Math.random() * (window.innerWidth - 80) + 'px';
+            sphere.style.top = Math.random() * (window.innerHeight - 80) + 'px';
+            const color = colors[Math.floor(Math.random() * colors.length)];
+            sphere.style.background = `radial-gradient(circle at 30% 30%, ${color}, #000)`;
+            sphere.style.color = color;
             sphere.addEventListener('click', (e) => { e.stopPropagation(); popSphere(sphere); });
             spheresContainer.appendChild(sphere);
             spheres.push(sphere);
-            setTimeout(() => { if(sphere.parentNode) { sphere.remove(); spheres = spheres.filter(s => s !== sphere); } }, 15000);
+            setTimeout(() => { if(sphere.parentNode) { sphere.remove(); spheres = spheres.filter(s => s !== sphere); } }, 14000);
         }
         function popSphere(sphere) {
             sphere.classList.add('pop-animation');
             score++;
             scoreElement.textContent = score;
-            if(score === 100 && !achievementShown) {
+            if (score === 100 && !achievementShown) {
                 achievementShown = true;
-                const achievementDiv = document.createElement('div');
-                achievementDiv.className = 'achievement';
-                achievementDiv.textContent = 'ТЫКУН!';
-                document.body.appendChild(achievementDiv);
-                for(let i=0;i<100;i++) {
+                const ach = document.createElement('div');
+                ach.className = 'achievement';
+                ach.textContent = 'ТЫКУН!';
+                document.body.appendChild(ach);
+                for (let i=0;i<80;i++) {
                     const conf = document.createElement('div');
-                    conf.className = 'confetti';
+                    conf.className = 'particle';
+                    conf.style.position = 'fixed';
                     conf.style.left = Math.random() * window.innerWidth + 'px';
-                    conf.style.backgroundColor = `hsl(${Math.random() * 360}, 100%, 50%)`;
-                    conf.style.width = Math.random() * 8 + 4 + 'px';
-                    conf.style.animationDuration = Math.random() * 2 + 2 + 's';
+                    conf.style.top = Math.random() * window.innerHeight + 'px';
+                    conf.style.background = colors[Math.floor(Math.random()*colors.length)];
+                    conf.style.width = '8px'; conf.style.height = '8px';
+                    conf.style.zIndex = '150';
+                    conf.style.animation = 'confettiFall 3s ease-out forwards';
                     document.body.appendChild(conf);
                     setTimeout(() => conf.remove(), 3000);
                 }
-                setTimeout(() => achievementDiv.classList.add('achievement-fade'), 1500);
-                setTimeout(() => achievementDiv.remove(), 3500);
+                setTimeout(() => ach.classList.add('achievement-fade'), 1500);
+                setTimeout(() => ach.remove(), 3500);
             }
             setTimeout(() => { if(sphere.parentNode) sphere.remove(); spheres = spheres.filter(s => s !== sphere); }, 300);
         }
-        setInterval(() => { if(spheres.length < 30) createSphere(); }, 2000);
-        for(let i=0;i<15;i++) setTimeout(() => createSphere(), i*300);
-        const themeToggle = document.getElementById('themeToggle');
-        const body = document.body;
-        function setTheme(theme) {
-            if(theme === 'light') { body.classList.add('light'); themeToggle.innerHTML = '🌙'; localStorage.setItem('theme', 'light'); }
-            else { body.classList.remove('light'); themeToggle.innerHTML = '☀️'; localStorage.setItem('theme', 'dark'); }
-        }
-        (localStorage.getItem('theme') === 'light') ? setTheme('light') : setTheme('dark');
-        themeToggle.addEventListener('click', () => body.classList.contains('light') ? setTheme('dark') : setTheme('light'));
-        
+        setInterval(() => { if(spheres.length < 25) createSphere(); }, 1800);
+        for(let i=0;i<12;i++) setTimeout(createSphere, i*250);
+
         function showAlert(msg, type) {
-            const container = document.getElementById('alertContainer');
-            container.innerHTML = `<div class="alert alert-${type}" style="padding:12px; border-radius:20px; margin-bottom:20px; background:${type==='error'?'rgba(239,68,68,0.15)':'rgba(34,197,94,0.15)'}">${msg}</div>`;
-            setTimeout(() => container.innerHTML = '', 5000);
+            const cont = document.getElementById('alertContainer');
+            cont.innerHTML = `<div class="alert alert-${type}">${type==='error'?'⚠️':'✅'} ${msg}</div>`;
+            setTimeout(() => cont.innerHTML = '', 4000);
         }
-        
+
         async function getVideoInfo() {
             const url = document.getElementById('videoUrl').value.trim();
             if(!url) { showAlert('Введите ссылку', 'error'); return; }
             currentVideoUrl = url;
-            document.getElementById('loader').style.display = 'block';
+            document.getElementById('loader').style.display = 'flex';
             document.getElementById('videoInfo').style.display = 'none';
             document.getElementById('playlistPanel').style.display = 'none';
             try {
-                const response = await fetch('/api/video-info', { method: 'POST', headers: getHeaders(), body: JSON.stringify({ url }) });
-                const data = await response.json();
+                const resp = await fetch('/api/video-info', { method: 'POST', headers: getHeaders(), body: JSON.stringify({ url }) });
+                const data = await resp.json();
                 document.getElementById('loader').style.display = 'none';
                 if(data.error) { showAlert(data.error, 'error'); return; }
-                
                 if(data.is_playlist) {
                     currentPlaylist = data;
                     document.getElementById('playlistPanel').style.display = 'block';
                     const videosDiv = document.getElementById('playlistVideos');
                     videosDiv.innerHTML = '';
-                    data.videos.forEach(video => {
+                    data.videos.forEach(v => {
                         const div = document.createElement('div');
                         div.className = 'playlist-video-item';
-                        div.innerHTML = `
-                            <input type="checkbox" value="${video.url}" id="video_${video.id}">
-                            <label for="video_${video.id}">${video.title.substring(0, 60)}${video.title.length > 60 ? '...' : ''}</label>
-                            <span class="duration">${Math.floor(video.duration/60)}:${(video.duration%60).toString().padStart(2,'0')}</span>
-                        `;
+                        div.innerHTML = `<input type="checkbox" value="${v.url}"> <label>${v.title}</label> <span>${Math.floor(v.duration/60)}:${(v.duration%60).toString().padStart(2,'0')}</span>`;
                         videosDiv.appendChild(div);
                     });
-                    document.getElementById('videoInfo').style.display = 'none';
                 } else {
                     currentVideoInfo = data;
                     document.getElementById('videoThumbnail').src = data.thumbnail || '';
                     document.getElementById('videoTitle').innerText = data.title;
-                    if(data.duration) document.getElementById('videoDuration').innerHTML = `⏱️ Длительность: ${Math.floor(data.duration/60)}:${(data.duration%60).toString().padStart(2,'0')}`;
+                    document.getElementById('videoDuration').innerHTML = `⏱️ ${Math.floor(data.duration/60)}:${(data.duration%60).toString().padStart(2,'0')}`;
                     const list = document.getElementById('formatsList');
                     list.innerHTML = '';
+                    selectedFormat = null;
                     data.formats.forEach(f => {
                         const div = document.createElement('div');
                         div.className = 'format-card';
                         const isLocked = !isPremiumUser && f.resolution !== '480p' && f.resolution !== '360p';
                         if(isLocked) div.classList.add('premium-locked');
-                        div.innerHTML = `<strong>${f.resolution}</strong><br><small>${f.ext.toUpperCase()} · ${f.filesize_mb} МБ</small>`;
-                        if(!isLocked) {
-                            div.onclick = () => {
-                                selectedFormat = f.format_id;
-                                document.querySelectorAll('.format-card').forEach(c => c.classList.remove('selected'));
-                                div.classList.add('selected');
-                            };
-                        }
+                        div.innerHTML = `<strong>${f.resolution}</strong><br><small>${f.ext} · ${f.filesize_mb} MB</small>`;
+                        if(!isLocked) div.onclick = () => {
+                            selectedFormat = f.format_id;
+                            document.querySelectorAll('.format-card').forEach(c => c.classList.remove('selected'));
+                            div.classList.add('selected');
+                        };
                         list.appendChild(div);
                     });
-                    if(data.formats.length && !data.formats[0].resolution.includes('720') && !data.formats[0].resolution.includes('1080')) {
-                        selectedFormat = data.formats[0].format_id;
-                        list.firstChild?.classList.add('selected');
-                    }
+                    const first = document.querySelector('.format-card:not(.premium-locked)');
+                    if(first) first.click();
                     document.getElementById('videoInfo').style.display = 'block';
-                    document.getElementById('downloadMp3Btn').style.display = isPremiumUser ? 'inline-block' : 'none';
                 }
-            } catch(e) { document.getElementById('loader').style.display = 'none'; showAlert('Ошибка сервера', 'error'); }
+            } catch(e) { 
+                document.getElementById('loader').style.display = 'none'; 
+                showAlert('Ошибка сервера', 'error'); 
+            }
         }
-        
+
         async function downloadVideo() {
             if(!selectedFormat || !currentVideoUrl) { showAlert('Выберите качество', 'error'); return; }
             try {
-                const response = await fetch('/api/download', { method: 'POST', headers: getHeaders(), body: JSON.stringify({ url: currentVideoUrl, format_id: selectedFormat }) });
-                if(!response.ok) { const data = await response.json(); throw new Error(data.error || 'Ошибка'); }
-                const blob = await response.blob();
+                const resp = await fetch('/api/download', { method: 'POST', headers: getHeaders(), body: JSON.stringify({ url: currentVideoUrl, format_id: selectedFormat }) });
+                if(!resp.ok) { const e = await resp.json(); throw new Error(e.error); }
+                const blob = await resp.blob();
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
                 a.download = 'video.mp4';
                 a.click();
-                URL.revokeObjectURL(a.href);
-                showAlert('✅ Скачивание началось!', 'success');
+                showAlert('Скачивание началось!', 'success');
                 checkPremiumStatus();
-            } catch(e) { showAlert('Ошибка: ' + e.message, 'error'); }
+            } catch(e) { showAlert(e.message, 'error'); }
         }
-        
+
         async function downloadMp3() {
-            if(!currentVideoUrl) { showAlert('Сначала получите информацию о видео', 'error'); return; }
-            if(!isPremiumUser) { showAlert('Конвертация в MP3 доступна только в Premium', 'error'); return; }
+            if(!currentVideoUrl) return showAlert('Сначала получите информацию', 'error');
+            if(!isPremiumUser) return showAlert('MP3 только для Premium', 'error');
             try {
-                const response = await fetch('/api/download-mp3', { method: 'POST', headers: getHeaders(), body: JSON.stringify({ url: currentVideoUrl }) });
-                if(!response.ok) { const data = await response.json(); throw new Error(data.error || 'Ошибка'); }
-                const blob = await response.blob();
+                const resp = await fetch('/api/download-mp3', { method: 'POST', headers: getHeaders(), body: JSON.stringify({ url: currentVideoUrl }) });
+                if(!resp.ok) { const e = await resp.json(); throw new Error(e.error); }
+                const blob = await resp.blob();
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
                 a.download = 'audio.mp3';
                 a.click();
-                URL.revokeObjectURL(a.href);
-                showAlert('✅ MP3 готов!', 'success');
-            } catch(e) { showAlert('Ошибка: ' + e.message, 'error'); }
+                showAlert('MP3 готов!', 'success');
+            } catch(e) { showAlert(e.message, 'error'); }
         }
-        
-        async function downloadPlaylist() {
-            if(!currentPlaylist) { showAlert('Сначала получите информацию о плейлисте', 'error'); return; }
-            if(!isPremiumUser) { showAlert('Скачивание плейлистов доступно только в Premium', 'error'); return; }
-            const selected = [];
-            document.querySelectorAll('.playlist-video-item input:checked').forEach(cb => {
-                selected.push(cb.value);
-            });
-            if(selected.length === 0) { showAlert('Выберите хотя бы одно видео', 'error'); return; }
-            showAlert('📦 Начинаем скачивание плейлиста... Это может занять несколько минут', 'success');
+
+        document.getElementById('downloadPlaylistBtn').addEventListener('click', async () => {
+            if(!currentPlaylist) return;
+            if(!isPremiumUser) return showAlert('Плейлисты только для Premium', 'error');
+            const selected = [...document.querySelectorAll('.playlist-video-item input:checked')].map(cb => cb.value);
+            if(!selected.length) return showAlert('Выберите видео', 'error');
             try {
-                const response = await fetch('/api/download-playlist', { method: 'POST', headers: getHeaders(), body: JSON.stringify({ playlist_url: currentVideoUrl, selected_videos: selected }) });
-                if(!response.ok) { const data = await response.json(); throw new Error(data.error || 'Ошибка'); }
-                const blob = await response.blob();
+                const resp = await fetch('/api/download-playlist', { method: 'POST', headers: getHeaders(), body: JSON.stringify({ playlist_url: currentVideoUrl, selected_videos: selected }) });
+                if(!resp.ok) { const e = await resp.json(); throw new Error(e.error); }
+                const blob = await resp.blob();
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
                 a.download = 'playlist.zip';
                 a.click();
-                URL.revokeObjectURL(a.href);
-                showAlert('✅ Плейлист скачан!', 'success');
-            } catch(e) { showAlert('Ошибка: ' + e.message, 'error'); }
-        }
-        
+                showAlert('Плейлист скачан!', 'success');
+            } catch(e) { showAlert(e.message, 'error'); }
+        });
+
         document.getElementById('videoUrl').addEventListener('keypress', e => { if(e.key === 'Enter') getVideoInfo(); });
-        document.getElementById('downloadPlaylistBtn')?.addEventListener('click', downloadPlaylist);
-        
         checkPremiumStatus();
     </script>
 </body>
@@ -1123,6 +1148,7 @@ HTML_TEMPLATE = """
 @app.route('/')
 def index():
     user_id = get_user_id()
+    update_online_status(user_id)
     resp = make_response(render_template_string(HTML_TEMPLATE))
     set_user_id_cookie(resp, user_id)
     return resp
@@ -1132,12 +1158,10 @@ def api_premium_status():
     user_id = request.cookies.get('videoSaveUserId')
     if not user_id:
         return jsonify({'is_premium': False, 'expire_date': None, 'downloads_left': MAX_FREE_DOWNLOADS_PER_WEEK, 'show_ad': True})
-    
     week_key = get_week_key()
     downloads_week = DOWNLOAD_STATS.get(user_id, {}).get(week_key, 0)
     downloads_left = max(0, MAX_FREE_DOWNLOADS_PER_WEEK - downloads_week)
     show_ad = should_show_ad(user_id)
-    
     if is_premium(user_id):
         premium_users = load_premium_users()
         expire_date = premium_users[user_id].get('expire', '2099-12-31') if user_id in premium_users else None
@@ -1145,292 +1169,145 @@ def api_premium_status():
     else:
         return jsonify({'is_premium': False, 'expire_date': None, 'downloads_left': downloads_left, 'show_ad': show_ad})
 
+@app.route('/api/online')
+def api_online():
+    return jsonify({'online': len(ONLINE_USERS)})
+
 @app.route('/api/video-info', methods=['POST'])
 @rate_limit(20, 60)
 def api_video_info():
-    try:
-        data = request.get_json()
-        url = data.get('url', '').strip()
-        if not url:
-            return jsonify({'error': 'URL не указан'}), 400
-        
-        if 'playlist' in url or 'list=' in url:
-            info, err = get_playlist_info(url)
-            if err:
-                return jsonify({'error': err}), 400
-            if info:
-                info['is_playlist'] = True
-                return jsonify(info)
-        
-        info, err = get_video_info(url)
-        if err:
-            return jsonify({'error': err}), 400
-        user_id = request.cookies.get('videoSaveUserId')
-        if user_id:
-            info['premium'] = is_premium(user_id)
-        info['is_playlist'] = False
-        return jsonify(info)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    data = request.get_json()
+    url = data.get('url', '').strip()
+    if not url: return jsonify({'error': 'URL не указан'}), 400
+    if 'playlist' in url or 'list=' in url:
+        info, err = get_playlist_info(url)
+        if err: return jsonify({'error': err}), 400
+        if info:
+            info['is_playlist'] = True
+            return jsonify(info)
+    info, err = get_video_info(url)
+    if err: return jsonify({'error': err}), 400
+    info['is_playlist'] = False
+    return jsonify(info)
 
 @app.route('/api/download', methods=['POST'])
 @rate_limit(10, 60)
 def api_download():
-    try:
-        data = request.get_json()
-        url = data.get('url', '').strip()
-        fid = data.get('format_id', 'best')
-        if not url:
-            return jsonify({'error': 'URL не указан'}), 400
-        
-        user_id = request.cookies.get('videoSaveUserId')
-        if not user_id:
-            user_id = str(uuid.uuid4())
-        
-        ok, err = check_download_limit(user_id)
-        if not ok:
-            return jsonify({'error': err}), 403
-        
-        path, err = download_video(url, fid)
-        if err:
-            return jsonify({'error': err}), 400
-        if not path or not os.path.exists(path):
-            return jsonify({'error': 'Не удалось скачать'}), 500
-        
-        increment_download_count(user_id)
-        
-        @after_this_request
-        def remove(resp):
-            try:
-                if os.path.exists(path):
-                    os.remove(path)
-            except:
-                pass
-            return resp
-        
-        return send_file(path, as_attachment=True, download_name='video.mp4')
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    data = request.get_json()
+    url = data.get('url', '').strip()
+    fid = data.get('format_id', 'best')
+    if not url: return jsonify({'error': 'URL не указан'}), 400
+    user_id = request.cookies.get('videoSaveUserId') or str(uuid.uuid4())
+    ok, err = check_download_limit(user_id)
+    if not ok: return jsonify({'error': err}), 403
+    path, err = download_video(url, fid)
+    if err: return jsonify({'error': err}), 400
+    if not path or not os.path.exists(path): return jsonify({'error': 'Не удалось скачать'}), 500
+    increment_download_count(user_id)
+    @after_this_request
+    def remove(resp):
+        try:
+            if os.path.exists(path): os.remove(path)
+        except: pass
+        return resp
+    return send_file(path, as_attachment=True, download_name='video.mp4')
 
 @app.route('/api/download-mp3', methods=['POST'])
 @rate_limit(10, 60)
 def api_download_mp3():
-    try:
-        data = request.get_json()
-        url = data.get('url', '').strip()
-        if not url:
-            return jsonify({'error': 'URL не указан'}), 400
-        
-        user_id = request.cookies.get('videoSaveUserId')
-        if not user_id:
-            user_id = str(uuid.uuid4())
-        
-        if not is_premium(user_id):
-            return jsonify({'error': 'Конвертация в MP3 доступна только в Premium'}), 403
-        
-        video_path, err = download_video(url, 'bestaudio')
-        if err:
-            return jsonify({'error': err}), 400
-        if not video_path or not os.path.exists(video_path):
-            return jsonify({'error': 'Не удалось скачать видео'}), 500
-        
-        mp3_path = video_path.replace('.mp4', '.mp3').replace('.webm', '.mp3')
-        if not convert_to_mp3(video_path, mp3_path):
-            return jsonify({'error': 'Ошибка конвертации в MP3'}), 500
-        
+    data = request.get_json()
+    url = data.get('url', '').strip()
+    if not url: return jsonify({'error': 'URL не указан'}), 400
+    user_id = request.cookies.get('videoSaveUserId') or str(uuid.uuid4())
+    if not is_premium(user_id): return jsonify({'error': 'Конвертация в MP3 доступна только в Premium'}), 403
+    video_path, err = download_video(url, 'bestaudio')
+    if err: return jsonify({'error': err}), 400
+    mp3_path = video_path.replace('.mp4', '.mp3').replace('.webm', '.mp3')
+    if not convert_to_mp3(video_path, mp3_path):
+        return jsonify({'error': 'Ошибка конвертации в MP3'}), 500
+    try: os.remove(video_path)
+    except: pass
+    @after_this_request
+    def remove_mp3(resp):
         try:
-            if os.path.exists(video_path):
-                os.remove(video_path)
-        except:
-            pass
-        
-        @after_this_request
-        def remove_mp3(resp):
-            try:
-                if os.path.exists(mp3_path):
-                    os.remove(mp3_path)
-            except:
-                pass
-            return resp
-        
-        return send_file(mp3_path, as_attachment=True, download_name='audio.mp3')
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+            if os.path.exists(mp3_path): os.remove(mp3_path)
+        except: pass
+        return resp
+    return send_file(mp3_path, as_attachment=True, download_name='audio.mp3')
 
 @app.route('/api/download-playlist', methods=['POST'])
 @rate_limit(5, 120)
 def api_download_playlist():
-    try:
-        data = request.get_json()
-        playlist_url = data.get('playlist_url', '').strip()
-        selected_videos = data.get('selected_videos', [])
-        
-        if not playlist_url or not selected_videos:
-            return jsonify({'error': 'Не указаны параметры'}), 400
-        
-        user_id = request.cookies.get('videoSaveUserId')
-        if not user_id:
-            user_id = str(uuid.uuid4())
-        
-        if not is_premium(user_id):
-            return jsonify({'error': 'Скачивание плейлистов доступно только в Premium'}), 403
-        
-        temp_dir = os.path.join(DOWNLOAD_FOLDER, f'playlist_{uuid.uuid4()}')
-        os.makedirs(temp_dir, exist_ok=True)
-        
-        zip_path, err = download_playlist(playlist_url, selected_videos, temp_dir)
-        
+    data = request.get_json()
+    playlist_url = data.get('playlist_url', '').strip()
+    selected_videos = data.get('selected_videos', [])
+    if not playlist_url or not selected_videos: return jsonify({'error': 'Не указаны параметры'}), 400
+    user_id = request.cookies.get('videoSaveUserId') or str(uuid.uuid4())
+    if not is_premium(user_id): return jsonify({'error': 'Скачивание плейлистов доступно только в Premium'}), 403
+    temp_dir = os.path.join(DOWNLOAD_FOLDER, f'playlist_{uuid.uuid4()}')
+    os.makedirs(temp_dir, exist_ok=True)
+    zip_path, err = download_playlist(playlist_url, selected_videos, temp_dir)
+    try: import shutil; shutil.rmtree(temp_dir)
+    except: pass
+    if err: return jsonify({'error': err}), 500
+    @after_this_request
+    def remove_zip(resp):
         try:
-            import shutil
-            shutil.rmtree(temp_dir)
-        except:
-            pass
-        
-        if err:
-            return jsonify({'error': err}), 500
-        if not zip_path or not os.path.exists(zip_path):
-            return jsonify({'error': 'Не удалось создать архив'}), 500
-        
-        @after_this_request
-        def remove_zip(resp):
-            try:
-                if os.path.exists(zip_path):
-                    os.remove(zip_path)
-            except:
-                pass
-            return resp
-        
-        return send_file(zip_path, as_attachment=True, download_name='playlist.zip')
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+            if os.path.exists(zip_path): os.remove(zip_path)
+        except: pass
+        return resp
+    return send_file(zip_path, as_attachment=True, download_name='playlist.zip')
 
 @app.route('/create_yookassa_payment')
 def create_yookassa_payment():
-    user_id = request.cookies.get('videoSaveUserId')
-    if not user_id:
-        user_id = str(uuid.uuid4())
-    
+    user_id = request.cookies.get('videoSaveUserId') or str(uuid.uuid4())
     plan = request.args.get('plan', 'month')
     amount = PRICES.get(plan, 50)
-    
-    if plan == 'month':
-        days = 30
-    elif plan == 'year':
-        days = 365
-    else:
-        days = 36500  # forever ~100 лет
-    
+    days = {'month': 30, 'year': 365, 'forever': 36500}.get(plan, 30)
     try:
         return_url = f"https://video-downloader-r3y6.onrender.com/payment_success_yookassa?user_id={user_id}&plan={plan}"
-        
         payment = Payment.create({
             "amount": {"value": str(amount), "currency": "RUB"},
-            "confirmation": {
-                "type": "redirect", 
-                "return_url": return_url
-            },
+            "confirmation": {"type": "redirect", "return_url": return_url},
             "capture": True,
             "description": f"Отключение рекламы - {plan}",
             "metadata": {"user_id": user_id, "plan": plan, "days": days}
         })
         return redirect(payment.confirmation.confirmation_url)
     except Exception as e:
-        logger.error(f"Ошибка при создании платежа: {e}")
         return f"Ошибка: {e}"
 
 @app.route('/payment_success_yookassa')
 def payment_success_yookassa():
-    user_id = request.args.get('user_id')
+    user_id = request.args.get('user_id') or request.cookies.get('videoSaveUserId')
     plan = request.args.get('plan', 'month')
-    
-    if not user_id:
-        user_id = request.cookies.get('videoSaveUserId')
-    
     if user_id:
-        if plan == 'forever':
-            add_forever(user_id)
-            logger.info(f"✅ Вечное отключение рекламы активировано для {user_id}")
-        else:
-            days = 365 if plan == 'year' else 30
-            add_premium(user_id, days)
-            logger.info(f"✅ Премиум активирован для {user_id} на {days} дней ({plan})")
-    else:
-        logger.error("❌ Не удалось получить user_id")
-    
+        if plan == 'forever': add_forever(user_id)
+        else: add_premium(user_id, 365 if plan == 'year' else 30)
     return '''
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Оплата прошла успешно</title>
+    <!DOCTYPE html><html><head><meta charset="UTF-8"><title>Успех</title>
     <meta http-equiv="refresh" content="3;url=/">
-    <style>
-        body { font-family: Arial; text-align: center; padding: 50px; background: #0f0c29; color: white; }
-        h1 { color: #22c55e; }
-        .loader {
-            margin: 20px auto;
-            width: 40px;
-            height: 40px;
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #22c55e;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin { 100% { transform: rotate(360deg); } }
-    </style>
-</head>
-<body>
-    <div class="loader"></div>
-    <h1>✅ Оплата прошла успешно!</h1>
-    <p>Реклама отключена. Спасибо за поддержку проекта!</p>
-    <p>Перенаправление...</p>
-</body>
-</html>
-    '''
+    <style>body{background:#0a0a1a;color:white;text-align:center;padding:80px;font-family:Inter;}</style>
+    </head><body><h1 style="color:#00e676;">✅ Оплата прошла успешно!</h1><p>Перенаправление...</p></body></html>'''
 
 @app.route('/yookassa-webhook', methods=['POST'])
 def yookassa_webhook():
-    try:
-        data = request.json
-        logger.info(f"Webhook от ЮKassa: {data}")
-        if data.get('event') == 'payment.succeeded':
-            payment = data.get('object', {})
-            metadata = payment.get('metadata', {})
-            user_id = metadata.get('user_id')
-            plan = metadata.get('plan', 'month')
-            if user_id:
-                if plan == 'forever':
-                    add_forever(user_id)
-                else:
-                    days = int(metadata.get('days', 30))
-                    add_premium(user_id, days)
-                logger.info(f"Премиум активирован для {user_id} через webhook")
-        return jsonify({'status': 'ok'}), 200
-    except Exception as e:
-        logger.error(f"Ошибка webhook: {e}")
-        return jsonify({'error': str(e)}), 500
+    data = request.json
+    if data.get('event') == 'payment.succeeded':
+        payment = data.get('object', {})
+        metadata = payment.get('metadata', {})
+        user_id = metadata.get('user_id')
+        plan = metadata.get('plan', 'month')
+        if user_id:
+            if plan == 'forever': add_forever(user_id)
+            else: add_premium(user_id, int(metadata.get('days', 30)))
+    return jsonify({'status': 'ok'}), 200
 
 @app.route('/force-premium')
 def force_premium():
-    user_id = request.cookies.get('videoSaveUserId')
-    if not user_id:
-        user_id = str(uuid.uuid4())
-    
+    user_id = request.cookies.get('videoSaveUserId') or str(uuid.uuid4())
     add_premium(user_id, 30)
-    return f'''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>Премиум активирован</title>
-        <meta http-equiv="refresh" content="2;url=/">
-    </head>
-    <body>
-        <h1>✅ Премиум активирован для {user_id}</h1>
-        <p>Перенаправление на главную...</p>
-    </body>
-    </html>
-    '''
+    return f'<h1>✅ Премиум активирован для {user_id}</h1><meta http-equiv="refresh" content="2;url=/">'
 
 @app.route('/requisites')
 def requisites_redirect():
@@ -1439,70 +1316,29 @@ def requisites_redirect():
 @app.route('/requisites/secret', methods=['GET', 'POST'])
 def requisites_secret():
     if request.method == 'POST':
-        password = request.form.get('password')
-        if password == SECRET_REQUISITES_KEY:
+        if request.form.get('password') == SECRET_REQUISITES_KEY:
             session['requisites_auth'] = True
             return redirect(url_for('requisites_secret'))
         else:
-            return '''
-            <!DOCTYPE html>
-            <html>
-            <head><meta charset="UTF-8"><title>Доступ запрещён</title>
-            <style>body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;text-align:center;padding:50px}
-            .card{background:rgba(20,20,40,0.6);padding:30px;border-radius:24px;max-width:400px;margin:auto}
-            input,button{padding:10px;margin:10px;border-radius:8px;border:none}
-            button{background:#a855f7;color:white;cursor:pointer}</style>
-            </head>
-            <body><div class="card"><h1>🔒 Неверный пароль</h1><a href="/requisites/secret">Попробовать снова</a></div></body>
-            </html>
-            '''
-    
+            return '<h1>🔒 Неверный пароль</h1><a href="/requisites/secret">Попробовать снова</a>'
     if session.get('requisites_auth'):
-        return '''<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Реквизиты</title>
-<style>body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;padding:40px}.card{background:rgba(20,20,40,0.6);backdrop-filter:blur(12px);padding:30px;border-radius:24px;max-width:700px;margin:auto;border:1px solid rgba(168,85,247,0.3)}h1{color:#a855f7}h2{color:#f59e0b}</style>
-</head>
-<body>
-<div class="card">
-    <h1>🔐 Реквизиты самозанятого</h1>
-    <p><strong>ФИО:</strong> Юренко Богдан Петрович</p>
-    <p><strong>ИНН:</strong> 231408820790</p>
-    <p><strong>Статус:</strong> Самозанятый</p>
-    <hr>
-    <p><strong>Email:</strong> bogdanyrenko@gmail.com</p>
-    <p><strong>Сайт:</strong> https://video-downloader-r3y6.onrender.com</p>
-    <h2>📋 Условия оплаты</h2>
-    <ul><li>Оплата через ЮKassa (банковская карта)</li><li>Отключение рекламы на месяц: 50₽</li><li>Отключение рекламы навсегда: 800₽</li><li>Premium подписка на год: 650₽</li></ul>
-    <h2>↩️ Условия возврата</h2>
-    <ul><li>Возврат в течение 14 дней</li><li>Связь: bogdanyrenko@gmail.com</li></ul>
-    <p><a href="/logout-requisites">Выйти</a> | <a href="/">На главную</a></p>
-</div>
-</body>
-</html>'''
-    
-    return '''
-    <!DOCTYPE html>
-    <html>
-    <head><meta charset="UTF-8"><title>Введите пароль</title>
-    <style>body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;text-align:center;padding:50px}
-    .card{background:rgba(20,20,40,0.6);padding:30px;border-radius:24px;max-width:400px;margin:auto}
-    input,button{padding:10px;margin:10px;border-radius:8px;border:none}
-    button{background:#a855f7;color:white;cursor:pointer}</style>
-    </head>
-    <body>
-    <div class="card">
-        <h1>🔒 Доступ к реквизитам</h1>
-        <p>Введите пароль для продолжения</p>
-        <form method="POST">
-            <input type="password" name="password" placeholder="Пароль" autofocus>
-            <br>
-            <button type="submit">Войти</button>
-        </form>
-    </div>
-    </body>
-    </html>
-    '''
+        return '''<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Реквизиты</title>
+        <style>body{background:#0a0a1a;color:#e0e0f0;font-family:Inter;padding:40px;} 
+        .card{background:rgba(20,20,40,0.6);padding:30px;border-radius:24px;max-width:700px;margin:auto;border:1px solid #b44dff;}
+        h1{color:#b44dff}h2{color:#ffd700}</style></head><body><div class="card">
+        <h1>🔐 Реквизиты</h1><p><strong>ФИО:</strong> Юренко Богдан Петрович</p>
+        <p><strong>ИНН:</strong> 231408820790</p><p><strong>Статус:</strong> Самозанятый</p>
+        <hr><p><strong>Email:</strong> bogdanyrenko@gmail.com</p>
+        <h2>📋 Условия</h2><ul><li>Оплата через ЮKassa</li><li>Месяц — 50₽</li><li>Навсегда — 800₽</li><li>Год — 650₽</li></ul>
+        <h2>↩️ Возврат</h2><ul><li>14 дней, связь: bogdanyrenko@gmail.com</li></ul>
+        <p><a href="/logout-requisites">Выйти</a> | <a href="/">На главную</a></p>
+        </div></body></html>'''
+    return '''<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Пароль</title>
+    <style>body{background:#0a0a1a;color:white;text-align:center;padding:50px;font-family:Inter;}
+    .card{background:rgba(20,20,40,0.6);padding:30px;border-radius:24px;max-width:400px;margin:auto;border:1px solid #b44dff;}
+    input,button{padding:10px;margin:10px;border-radius:8px;border:none}button{background:#b44dff;color:white;}</style>
+    </head><body><div class="card"><h1>🔒 Доступ</h1><form method="POST">
+    <input type="password" name="password" placeholder="Пароль"><br><button type="submit">Войти</button></form></div></body></html>'''
 
 @app.route('/logout-requisites')
 def logout_requisites():
@@ -1511,10 +1347,14 @@ def logout_requisites():
 
 @app.route('/return-policy')
 def return_policy():
-    return '''<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Условия возврата</title><style>body{background:#0f0f1a;color:#e0e0e0;font-family:Arial;padding:40px}.card{background:rgba(20,20,40,0.6);backdrop-filter:blur(12px);padding:30px;border-radius:24px;max-width:700px;margin:auto;border:1px solid rgba(168,85,247,0.3)}h1{color:#a855f7}</style></head>
-<body><div class="card"><h1>📋 Политика возврата</h1><h2>Условия оплаты</h2><ul><li>Оплата через ЮKassa</li><li>Отключение рекламы на месяц: 50₽</li><li>Отключение рекламы навсегда: 800₽</li><li>Premium подписка на год: 650₽</li></ul><h2>Условия возврата</h2><ul><li>Возврат в течение 14 дней</li><li>Для возврата: bogdanyrenko@gmail.com</li></ul><a href="/">← На главную</a></div></body></html>'''
+    return '''<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Возврат</title>
+    <style>body{background:#0a0a1a;color:#e0e0f0;font-family:Inter;padding:40px;}
+    .card{background:rgba(20,20,40,0.6);padding:30px;border-radius:24px;max-width:700px;margin:auto;border:1px solid #b44dff;}
+    h1{color:#b44dff}</style></head><body><div class="card"><h1>📋 Политика возврата</h1>
+    <h2>Условия оплаты</h2><ul><li>ЮKassa</li><li>Месяц — 50₽</li><li>Навсегда — 800₽</li><li>Год — 650₽</li></ul>
+    <h2>Условия возврата</h2><ul><li>14 дней</li><li>Email: bogdanyrenko@gmail.com</li></ul>
+    <a href="/">← На главную</a></div></body></html>'''
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=7860)
+  
