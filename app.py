@@ -24,8 +24,9 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'super-secret-key-2024-change-me')
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 
-YOOKASSA_SHOP_ID = "1369767"
-YOOKASSA_SECRET_KEY = "test_92d73ZaVYlLk9i1BvEwS6p5tflhwj7PSqiutGHHtosY"
+# ====== БОЕВЫЕ КЛЮЧИ ЮKASSA ======
+YOOKASSA_SHOP_ID = "1366100"
+YOOKASSA_SECRET_KEY = "live_R8h_Q65FCVf9e23TFoLNOQbl-u1H6eqWcmoLT-X12K8"
 
 Configuration.configure(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY)
 
@@ -359,7 +360,7 @@ def download_video(url, format_id='best'):
     except Exception as e:
         return None, str(e)
 
-# ========== HTML ШАБЛОН С РЕКЛАМОЙ ==========
+# ========== HTML ШАБЛОН (БЕЗ ИЗМЕНЕНИЙ) ==========
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -1330,7 +1331,7 @@ def create_yookassa_payment():
         days = 36500  # forever ~100 лет
     
     try:
-        return_url = f"https://video-downloader-r3y6.onrender.com/payment_success_yookassa?user_id={user_id}&plan={plan}"
+        return_url = f"https://video-downloader-production-a294.up.railway.app/payment_success_yookassa?user_id={user_id}&plan={plan}"
         
         payment = Payment.create({
             "amount": {"value": str(amount), "currency": "RUB"},
@@ -1480,7 +1481,7 @@ def requisites_secret():
     <p><strong>Статус:</strong> Самозанятый</p>
     <hr>
     <p><strong>Email:</strong> bogdanyrenko@gmail.com</p>
-    <p><strong>Сайт:</strong> https://video-downloader-r3y6.onrender.com</p>
+    <p><strong>Сайт:</strong> https://video-downloader-production-a294.up.railway.app</p>
     <h2>📋 Условия оплаты</h2>
     <ul><li>Оплата через ЮKassa (банковская карта)</li><li>Отключение рекламы на месяц: 50₽</li><li>Отключение рекламы навсегда: 800₽</li><li>Premium подписка на год: 650₽</li></ul>
     <h2>↩️ Условия возврата</h2>
