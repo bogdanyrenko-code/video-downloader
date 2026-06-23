@@ -21,14 +21,19 @@ logger = logging.getLogger(__name__)
 ssl._create_default_https_context = ssl._create_unverified_context
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'super-secret-key-2024-change-me')
+
+# ====== ВСЕ КЛЮЧИ БЕРУТСЯ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ======
+app.secret_key = os.environ.get('SECRET_KEY', 'default-dev-key-change-me')
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 
-# ====== БОЕВЫЕ КЛЮЧИ ЮKASSA ======
-YOOKASSA_SHOP_ID = "1366100"
-YOOKASSA_SECRET_KEY = "live_R8h_Q65FCVf9e23TFoLNOQbl-u1H6eqWcmoLT-X12K8"
+YOOKASSA_SHOP_ID = os.environ.get('YOOKASSA_SHOP_ID')
+YOOKASSA_SECRET_KEY = os.environ.get('YOOKASSA_SECRET_KEY')
 
-Configuration.configure(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY)
+if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
+    logger.warning("⚠️ Ключи ЮKassa не найдены в переменных окружения! Платежи НЕ РАБОТАЮТ.")
+else:
+    Configuration.configure(YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY)
+    logger.info("✅ ЮKassa настроена успешно")
 
 DOWNLOAD_FOLDER = "downloads"
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
@@ -360,7 +365,7 @@ def download_video(url, format_id='best'):
     except Exception as e:
         return None, str(e)
 
-# ========== HTML ШАБЛОН (БЕЗ ИЗМЕНЕНИЙ) ==========
+# ========== HTML ШАБЛОН ==========
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -1328,7 +1333,7 @@ def create_yookassa_payment():
     elif plan == 'year':
         days = 365
     else:
-        days = 36500  # forever ~100 лет
+        days = 36500
     
     try:
         return_url = f"https://video-downloader-production-a294.up.railway.app/payment_success_yookassa?user_id={user_id}&plan={plan}"
