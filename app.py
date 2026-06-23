@@ -1357,32 +1357,17 @@ def create_yookassa_payment():
 
 @app.route('/payment_success_yookassa')
 def payment_success_yookassa():
-    user_id = request.args.get('user_id')
-    plan = request.args.get('plan', 'month')
-    
-    if not user_id:
-        user_id = request.cookies.get('videoSaveUserId')
-    
-    if user_id:
-        if plan == 'forever':
-            add_forever(user_id)
-            logger.info(f"✅ Вечное отключение рекламы активировано для {user_id}")
-        else:
-            days = 365 if plan == 'year' else 30
-            add_premium(user_id, days)
-            logger.info(f"✅ Премиум активирован для {user_id} на {days} дней ({plan})")
-    else:
-        logger.error("❌ Не удалось получить user_id")
-    
+    # Этот маршрут теперь НЕ активирует премиум
+    # Премиум активируется только через webhook
     return '''
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <title>Оплата прошла успешно</title>
-    <meta http-equiv="refresh" content="3;url=/">
+    <meta http-equiv="refresh" content="5;url=/">
     <style>
-        body { font-family: Arial; text-align: center; padding: 50px; background: #0f0c29; color: white; }
+        body { font-family: Arial; text-align: center; padding: 50px; background: #0f0f1a; color: #e0e0e0; }
         h1 { color: #22c55e; }
         .loader {
             margin: 20px auto;
@@ -1399,7 +1384,7 @@ def payment_success_yookassa():
 <body>
     <div class="loader"></div>
     <h1>✅ Оплата прошла успешно!</h1>
-    <p>Реклама отключена. Спасибо за поддержку проекта!</p>
+    <p>Премиум активируется в течение 1 минуты.</p>
     <p>Перенаправление...</p>
 </body>
 </html>
