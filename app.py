@@ -86,7 +86,6 @@ def is_premium(user_id):
     return datetime.now() < expire_date
 
 def should_show_ad(user_id):
-    """Проверяет, нужно ли показывать рекламу пользователю"""
     premium_users = load_premium_users()
     if user_id not in premium_users:
         return True
@@ -1126,6 +1125,16 @@ def index():
     resp = make_response(render_template_string(HTML_TEMPLATE))
     set_user_id_cookie(resp, user_id)
     return resp
+
+# ====== МАРШРУТ ДЛЯ ПРОВЕРКИ ЯНДЕКСА ======
+@app.route('/yandex_3410dcf48fe9cf35.html')
+def yandex_verify():
+    return '''<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    </head>
+    <body>Verification: 3410dcf48fe9cf35</body>
+</html>'''
 
 @app.route('/api/premium-status')
 def api_premium_status():
