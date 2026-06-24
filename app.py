@@ -375,6 +375,8 @@ HTML_TEMPLATE = """
     <title>VideoSave — Скачивай видео</title>
     <!-- FAVICON (иконка во вкладке браузера) -->
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+    <!-- Мета-тег для подтверждения в Admitad -->
+    <meta name="verify-admitad" content="f64d2ff3ab" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
